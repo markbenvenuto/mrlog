@@ -56,7 +56,19 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
 
             let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
                 // println!("{}", &caps[1]);
-                String::from(parsed["attr"][&caps[1]].as_str().unwrap())
+                let v = &parsed["attr"][&caps[1]];
+                if v.is_object() {
+                    return v.dump();
+                }
+                if v.is_number() {
+                    return v.dump();
+                }
+                let r = v.as_str();
+                if r.is_none() {
+                    println!("WARNING: no str attr for '{}' in {}", &caps[1], s);
+                    return String::from("unknown");
+                }
+                String::from(r.unwrap())
             });
 
             format!(
@@ -153,6 +165,10 @@ fn test_log_to_str() {
 fn test_log_to_str_with_replacements() {
     let lf = LogFormatter::new();
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] test 123"};
+
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":{"abc":123}}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] test {\"abc\":123}"};
 }
 
 #[test]
