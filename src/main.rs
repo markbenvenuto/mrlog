@@ -18,7 +18,7 @@ extern crate regex;
 use regex::*;
 
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead};
 use std::path::Path;
 
 use structopt::StructOpt;
@@ -27,9 +27,9 @@ struct LogFormatter {
     re: Regex,
 }
 
-static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
+static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
 
- impl LogFormatter {
+impl LogFormatter {
     fn new() -> LogFormatter {
         LogFormatter {
             re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
@@ -51,8 +51,12 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
             if msg == "{}" {
                 return format!(
                     "{} {:<2} {:<8} [{}] {}",
-                    d, log_level, component, context, attr["message"].as_str().unwrap()
-                )
+                    d,
+                    log_level,
+                    component,
+                    context,
+                    attr["message"].as_str().unwrap()
+                );
             }
 
             let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
@@ -78,10 +82,20 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
             )
         } else {
             if !attr.is_empty() {
-                return format!("{} {:<2} {:<8} [{}] {}", d, log_level, component, context, String::from(msg) + attr.dump().as_ref());
+                return format!(
+                    "{} {:<2} {:<8} [{}] {}",
+                    d,
+                    log_level,
+                    component,
+                    context,
+                    String::from(msg) + attr.dump().as_ref()
+                );
             }
 
-            format!("{} {:<2} {:<8} [{}] {}", d, log_level, component, context, msg)
+            format!(
+                "{} {:<2} {:<8} [{}] {}",
+                d, log_level, component, context, msg
+            )
         }
     }
 
@@ -93,22 +107,40 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
         // TODO - become stateful and rember where we found a previous start
         let f = s.find(LOG_FORMAT_PREFIX);
         if f.is_some() {
-            let end = self.log_to_str(s[f.unwrap() .. s.len()].as_ref());
+            let end = self.log_to_str(s[f.unwrap()..s.len()].as_ref());
             return String::from(&s[0..f.unwrap()]) + end.as_ref();
         }
 
         // We do not think it is a JSON log line, return it as is
         String::from(s)
     }
-
 }
 
 // The output is wrapped in a Result to allow matching on errors
 // Returns an Iterator to the Reader of the lines of the file.
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
-where P: AsRef<Path>, {
+where
+    P: AsRef<Path>,
+{
     let file = File::open(filename)?;
     Ok(io::BufReader::new(file).lines())
+}
+
+fn convert_lines<T>(lines: T, writer: &mut dyn io::Write)
+where
+    T: Iterator<Item = io::Result<String>>,
+{
+    let lf_byte = vec![10];
+    let lf = LogFormatter::new();
+
+    for line in lines {
+        if let Ok(line_opt) = line {
+            writer
+                .write(lf.fuzzy_log_to_str(&line_opt.as_str()).as_bytes())
+                .unwrap();
+            writer.write(lf_byte.as_ref()).unwrap();
+        }
+    }
 }
 
 #[derive(StructOpt)]
@@ -122,40 +154,19 @@ struct Cli {
 fn main() {
     let args = Cli::from_args();
 
-    let lf = LogFormatter::new();
+    let stdout = io::stdout();
+    let mut handle_out = stdout.lock();
 
     if args.path.is_none() {
         let stdin = io::stdin();
         let handle_in = stdin.lock();
 
-        let stdout = io::stdout();
-        let mut handle_out = stdout.lock();
-
         let lines = io::BufReader::new(handle_in).lines();
-
-        let lf_byte = vec!{10};
-        for line in lines {
-    
-            if let Ok(line_opt) = line {
-                handle_out.write(lf.fuzzy_log_to_str(&line_opt.as_str()).as_bytes()).unwrap();
-                handle_out.write(lf_byte.as_ref()).unwrap();
-            }
-        }
-    
-    }  else {
-        let stdout = io::stdout();
-        let mut handle_out = stdout.lock();
-
+        convert_lines(lines, &mut handle_out);
+    } else {
         let lines = read_lines(args.path.unwrap()).unwrap();
 
-        let lf_byte = vec!{10};
-        for line in lines {
-    
-            if let Ok(line_opt) = line {
-                handle_out.write(lf.fuzzy_log_to_str(&line_opt.as_str()).as_bytes()).unwrap();
-                handle_out.write(lf_byte.as_ref()).unwrap();
-            }
-        }
+        convert_lines(lines, &mut handle_out);
     }
 }
 
