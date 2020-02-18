@@ -44,19 +44,20 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
         let component = parsed["c"].as_str().unwrap();
         let context = parsed["ctx"].as_str().unwrap();
         let msg = parsed["msg"].as_str().unwrap();
+        let attr = &parsed["attr"];
 
         if msg.contains("{") {
             // Handle messages which are just an empty {}
             if msg == "{}" {
                 return format!(
-                    "{} {} {:<8} [{}] {}",
-                    d, log_level, component, context, parsed["attr"]["message"].as_str().unwrap()
+                    "{} {:<2} {:<8} [{}] {}",
+                    d, log_level, component, context, attr["message"].as_str().unwrap()
                 )
             }
 
             let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
                 // println!("{}", &caps[1]);
-                let v = &parsed["attr"][&caps[1]];
+                let v = &attr[&caps[1]];
                 if v.is_object() {
                     return v.dump();
                 }
@@ -72,11 +73,15 @@ static LOG_FORMAT_PREFIX : &'static str = r#"{"t":{"$date"#;
             });
 
             format!(
-                "{} {} {:<8} [{}] {}",
+                "{} {:<2} {:<8} [{}] {}",
                 d, log_level, component, context, msg_fmt
             )
         } else {
-            format!("{} {} {:<8} [{}] {}", d, log_level, component, context, msg)
+            if !attr.is_empty() {
+                return format!("{} {:<2} {:<8} [{}] {}", d, log_level, component, context, String::from(msg) + attr.dump().as_ref());
+            }
+
+            format!("{} {:<2} {:<8} [{}] {}", d, log_level, component, context, msg)
         }
     }
 
