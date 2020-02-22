@@ -23,11 +23,20 @@ use std::path::Path;
 
 use structopt::StructOpt;
 
+use anyhow::{Context, Result};
+
 struct LogFormatter {
     re: Regex,
 }
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
+
+fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
+    let r = v[name]
+        .as_str()
+        .with_context(|| format!("Failed to find '{}' in JSON log line: {}", name, line))?;
+    Ok(r)
+}
 
 impl LogFormatter {
     fn new() -> LogFormatter {
@@ -36,27 +45,33 @@ impl LogFormatter {
         }
     }
 
-    fn log_to_str(&self, s: &str) -> String {
-        let parsed = json::parse(s).unwrap();
+    fn log_to_str(&self, s: &str) -> Result<String> {
+        let parsed =
+            json::parse(s).with_context(|| format!("Failed to parse JSON log line: {}", s))?;
 
-        let d = parsed["t"]["$date"].as_str().unwrap();
-        let log_level = parsed["s"].as_str().unwrap();
-        let component = parsed["c"].as_str().unwrap();
-        let context = parsed["ctx"].as_str().unwrap();
-        let msg = parsed["msg"].as_str().unwrap();
+        let d = parsed["t"]["$date"]
+            .as_str()
+            .with_context(|| format!("Failed to find 't.$date' in JSON log line: {}", s))?;
+        let log_level = get_json_str(&parsed, "s", s)?;
+        let component = get_json_str(&parsed, "c", s)?;
+        let context = get_json_str(&parsed, "ctx", s)?;
+        let msg = get_json_str(&parsed, "msg", s)?;
         let attr = &parsed["attr"];
 
         if msg.contains("{") {
             // Handle messages which are just an empty {}
             if msg == "{}" {
-                return format!(
+                return Ok(format!(
                     "{} {:<2} {:<8} [{}] {}",
                     d,
                     log_level,
                     component,
                     context,
-                    attr["message"].as_str().unwrap()
-                );
+                    attr["message"].as_str().with_context(|| format!(
+                        "Failed to find 'message' in JSON log line: {}",
+                        s
+                    ))?
+                ));
             }
 
             let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
@@ -76,43 +91,43 @@ impl LogFormatter {
                 String::from(r.unwrap())
             });
 
-            format!(
+            Ok(format!(
                 "{} {:<2} {:<8} [{}] {}",
                 d, log_level, component, context, msg_fmt
-            )
+            ))
         } else {
             if !attr.is_empty() {
-                return format!(
+                return Ok(format!(
                     "{} {:<2} {:<8} [{}] {}",
                     d,
                     log_level,
                     component,
                     context,
                     String::from(msg) + attr.dump().as_ref()
-                );
+                ));
             }
 
-            format!(
+            Ok(format!(
                 "{} {:<2} {:<8} [{}] {}",
                 d, log_level, component, context, msg
-            )
+            ))
         }
     }
 
-    fn fuzzy_log_to_str(&self, s: &str) -> String {
+    fn fuzzy_log_to_str(&self, s: &str) -> Result<String> {
         if s.starts_with(LOG_FORMAT_PREFIX) {
             return self.log_to_str(s);
         }
 
         // TODO - become stateful and rember where we found a previous start
         let f = s.find(LOG_FORMAT_PREFIX);
-        if f.is_some() {
-            let end = self.log_to_str(s[f.unwrap()..s.len()].as_ref());
-            return String::from(&s[0..f.unwrap()]) + end.as_ref();
+        if let Some(pos) = f {
+            let end = self.log_to_str(s[pos..s.len()].as_ref())?;
+            return Ok(String::from(&s[0..pos]) + end.as_ref());
         }
 
         // We do not think it is a JSON log line, return it as is
-        String::from(s)
+        Ok(String::from(s))
     }
 }
 
@@ -135,9 +150,16 @@ where
 
     for line in lines {
         if let Ok(line_opt) = line {
-            writer
-                .write(lf.fuzzy_log_to_str(&line_opt.as_str()).as_bytes())
-                .unwrap();
+            let convert_result = lf.fuzzy_log_to_str(&line_opt.as_str());
+            match convert_result {
+                Ok(s) => {
+                    writer.write(s.as_bytes()).unwrap();
+                }
+                Err(m) => {
+                    // TODO - format error message better
+                    writer.write(m.to_string().as_bytes()).unwrap();
+                }
+            }
             writer.write(lf_byte.as_ref()).unwrap();
         }
     }
@@ -174,23 +196,23 @@ fn main() {
 fn test_log_to_str() {
     let lf = LogFormatter::new();
 
-    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":20533,"ctx":"initandlisten","msg":"DEBUG build (which is slower)"}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] DEBUG build (which is slower)"};
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":20533,"ctx":"initandlisten","msg":"DEBUG build (which is slower)"}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] DEBUG build (which is slower)"};
 }
 
 #[test]
 fn test_log_to_str_with_replacements() {
     let lf = LogFormatter::new();
-    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
 
-    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] test 123"};
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123"};
 
-    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":{"abc":123}}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] test {\"abc\":123}"};
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":{"abc":123}}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test {\"abc\":123}"};
 }
 
 #[test]
 fn test_fuzzy_log() {
     let lf = LogFormatter::new();
-    assert_eq! { lf.fuzzy_log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#), "2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+    assert_eq! { lf.fuzzy_log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
 
-    assert_eq! { lf.fuzzy_log_to_str(r#"[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| {"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL","id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#), "[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| 2020-02-15T23:32:14.539-0500 I CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+    assert_eq! { lf.fuzzy_log_to_str(r#"[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| {"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL","id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| 2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
 }
