@@ -14,22 +14,28 @@ To convert a file:
 
 File is printed to standard out
 
+To run a command and colorize its output:
+
+```mrlog -c -e python buildscripts/resmoke.py ...```
+
 ## Options
 
 ```
 Convertes MongoDB 4.4 JSON log format to text format. Writes converted file to stdout
 
 USAGE:
-    mrlog [FLAGS] [path]
+    mrlog [FLAGS] [path-or-args]...
 
 FLAGS:
     -c, --color
+    -e, --execute    Execute command and process output
     -h, --help       Prints help information
-        --id         Log id to text log
+        --id         Log id in text log
     -V, --version    Prints version information
 
 ARGS:
-    <path>    Optional path to the file to read, defaults to stdin
+    <path-or-args>...    Optional path to the file to read, defaults to stdin In execute mode, a command to run and
+                         a list of args
 ```
 
 ## Build

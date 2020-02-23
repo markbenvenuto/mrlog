@@ -15,6 +15,8 @@
 extern crate json;
 extern crate regex;
 
+extern crate crossbeam_channel;
+
 use colored::Colorize;
 
 use regex::*;
@@ -22,12 +24,18 @@ use regex::*;
 use std::borrow::Cow;
 
 use std::fs::File;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::vec::Vec;
 
 use structopt::StructOpt;
 
 use anyhow::{Context, Result};
+
+mod shared_stream;
+use shared_stream::SharedStreamFactory;
 
 struct LogFormatter {
     re: Regex,
@@ -236,8 +244,8 @@ where
 /// Convertes MongoDB 4.4 JSON log format to text format. Writes converted file to stdout
 struct Cli {
     /// Optional path to the file to read, defaults to stdin
-    #[structopt(parse(from_os_str))]
-    path: Option<std::path::PathBuf>,
+    /// In execute mode, a command to run and a list of args
+    path_or_args: Vec<String>,
 
     // Color output - errors are red
     #[structopt(short, long)]
@@ -246,6 +254,10 @@ struct Cli {
     /// Log id in text log
     #[structopt(long)]
     id: bool,
+
+    /// Execute command and process output
+    #[structopt(short, long)]
+    execute: bool,
 }
 
 fn main() {
@@ -256,14 +268,82 @@ fn main() {
 
     let lf = LogFormatter::new(args.color, args.id);
 
-    if args.path.is_none() {
+    if args.execute {
+        let mut builder = Command::new(&args.path_or_args[0]);
+        for i in 1..args.path_or_args.len() {
+            builder.arg(&args.path_or_args[i]);
+        }
+
+        let child = builder
+            .stderr(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let ssf = SharedStreamFactory::new();
+        let mut stdout_writer = ssf.get_writer();
+
+        let mut stderr_writer = ssf.get_writer();
+
+        let mut output_out = child.stdout.ok_or_else(|| "Bad???").unwrap();
+        let mut output_err = child.stderr.ok_or_else(|| "Bad???").unwrap();
+
+        let ts = thread::spawn(move || {
+            let mut v = Vec::new();
+            v.resize(8192, 0);
+            loop {
+                let ret = output_out.read(v.as_mut_slice());
+                match ret {
+                    Ok(size) => {
+                        if size == 0 {
+                            break;
+                        }
+                        stdout_writer.write(&v.as_slice()[0..size]).unwrap();
+                    }
+                    Err(e) => {
+                        eprintln!("Unexpected error reading from standard out {:?}", e);
+                        break;
+                    }
+                };
+            }
+        });
+
+        let ts2 = thread::spawn(move || {
+            let mut v = Vec::new();
+            v.resize(8192, 0);
+            loop {
+                let ret = output_err.read(v.as_mut_slice());
+                match ret {
+                    Ok(size) => {
+                        if size == 0 {
+                            break;
+                        }
+                        stderr_writer.write(&v.as_slice()[0..size]).unwrap();
+                    }
+                    Err(e) => {
+                        eprintln!("Unexpected error reading from standard err {:?}", e);
+                        break;
+                    }
+                };
+            }
+        });
+
+        let std_reader = ssf.get_reader();
+
+        let lines = io::BufReader::new(std_reader).lines();
+        convert_lines(lf, lines, &mut handle_out);
+
+        ts.join().unwrap();
+        ts2.join().unwrap();
+    } else if args.path_or_args.len() == 0 {
         let stdin = io::stdin();
         let handle_in = stdin.lock();
 
         let lines = io::BufReader::new(handle_in).lines();
         convert_lines(lf, lines, &mut handle_out);
     } else {
-        let lines = read_lines(args.path.unwrap()).unwrap();
+        let p = std::path::PathBuf::from(&args.path_or_args[0]);
+        let lines = read_lines(p).unwrap();
 
         convert_lines(lf, lines, &mut handle_out);
     }
