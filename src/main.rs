@@ -15,7 +15,11 @@
 extern crate json;
 extern crate regex;
 
+use colored::Colorize;
+
 use regex::*;
+
+use std::borrow::Cow;
 
 use std::fs::File;
 use std::io::{self, BufRead};
@@ -27,6 +31,7 @@ use anyhow::{Context, Result};
 
 struct LogFormatter {
     re: Regex,
+    use_color: bool,
 }
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
@@ -38,11 +43,44 @@ fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'
     Ok(r)
 }
 
+fn format_line<'a>(
+    date: &str,
+    log_level: &str,
+    component: &str,
+    context: &str,
+    msg: Cow<'a, str>,
+) -> String {
+    format!(
+        "{} {:<2} {:<8} [{}] {}",
+        date, log_level, component, context, msg
+    )
+}
 impl LogFormatter {
-    fn new() -> LogFormatter {
+    fn new(use_color: bool) -> LogFormatter {
         LogFormatter {
             re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
+            use_color: use_color,
         }
+    }
+
+    #[cfg(test)]
+    fn new_for_test() -> LogFormatter {
+        LogFormatter {
+            re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
+            use_color: false,
+        }
+    }
+
+    fn maybe_color_text<'a>(&self, s: &'a str) -> Cow<'a, str> {
+        if !self.use_color {
+            return Cow::from(s);
+        }
+
+        if s.contains("uncaught exception") || s.contains("failed to load") {
+            return Cow::Owned(s.red().to_string());
+        }
+
+        return Cow::from(s);
     }
 
     fn log_to_str(&self, s: &str) -> Result<String> {
@@ -61,16 +99,14 @@ impl LogFormatter {
         if msg.contains("{") {
             // Handle messages which are just an empty {}
             if msg == "{}" {
-                return Ok(format!(
-                    "{} {:<2} {:<8} [{}] {}",
+                return Ok(format_line(
                     d,
                     log_level,
                     component,
                     context,
-                    attr["message"].as_str().with_context(|| format!(
-                        "Failed to find 'message' in JSON log line: {}",
-                        s
-                    ))?
+                    self.maybe_color_text(attr["message"].as_str().with_context(|| {
+                        format!("Failed to find 'message' in JSON log line: {}", s)
+                    })?),
                 ));
             }
 
@@ -91,25 +127,31 @@ impl LogFormatter {
                 String::from(r.unwrap())
             });
 
-            Ok(format!(
-                "{} {:<2} {:<8} [{}] {}",
-                d, log_level, component, context, msg_fmt
+            Ok(format_line(
+                d,
+                log_level,
+                component,
+                context,
+                self.maybe_color_text(&msg_fmt),
             ))
         } else {
             if !attr.is_empty() {
-                return Ok(format!(
-                    "{} {:<2} {:<8} [{}] {}",
+                let s = String::from(msg) + attr.dump().as_ref();
+                return Ok(format_line(
                     d,
                     log_level,
                     component,
                     context,
-                    String::from(msg) + attr.dump().as_ref()
+                    self.maybe_color_text(&s),
                 ));
             }
 
-            Ok(format!(
-                "{} {:<2} {:<8} [{}] {}",
-                d, log_level, component, context, msg
+            Ok(format_line(
+                d,
+                log_level,
+                component,
+                context,
+                self.maybe_color_text(msg),
             ))
         }
     }
@@ -141,12 +183,11 @@ where
     Ok(io::BufReader::new(file).lines())
 }
 
-fn convert_lines<T>(lines: T, writer: &mut dyn io::Write)
+fn convert_lines<T>(lf: LogFormatter, lines: T, writer: &mut dyn io::Write)
 where
     T: Iterator<Item = io::Result<String>>,
 {
     let lf_byte = vec![10];
-    let lf = LogFormatter::new();
 
     for line in lines {
         if let Ok(line_opt) = line {
@@ -171,6 +212,10 @@ struct Cli {
     /// Optional path to the file to read, defaults to stdin
     #[structopt(parse(from_os_str))]
     path: Option<std::path::PathBuf>,
+
+    // Color output - errors are red
+    #[structopt(short, long)]
+    color: bool,
 }
 
 fn main() {
@@ -179,29 +224,31 @@ fn main() {
     let stdout = io::stdout();
     let mut handle_out = stdout.lock();
 
+    let lf = LogFormatter::new(args.color);
+
     if args.path.is_none() {
         let stdin = io::stdin();
         let handle_in = stdin.lock();
 
         let lines = io::BufReader::new(handle_in).lines();
-        convert_lines(lines, &mut handle_out);
+        convert_lines(lf, lines, &mut handle_out);
     } else {
         let lines = read_lines(args.path.unwrap()).unwrap();
 
-        convert_lines(lines, &mut handle_out);
+        convert_lines(lf, lines, &mut handle_out);
     }
 }
 
 #[test]
 fn test_log_to_str() {
-    let lf = LogFormatter::new();
+    let lf = LogFormatter::new_for_test();
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":20533,"ctx":"initandlisten","msg":"DEBUG build (which is slower)"}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] DEBUG build (which is slower)"};
 }
 
 #[test]
 fn test_log_to_str_with_replacements() {
-    let lf = LogFormatter::new();
+    let lf = LogFormatter::new_for_test();
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123"};
@@ -211,7 +258,7 @@ fn test_log_to_str_with_replacements() {
 
 #[test]
 fn test_fuzzy_log() {
-    let lf = LogFormatter::new();
+    let lf = LogFormatter::new_for_test();
     assert_eq! { lf.fuzzy_log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
 
     assert_eq! { lf.fuzzy_log_to_str(r#"[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| {"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL","id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| 2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
