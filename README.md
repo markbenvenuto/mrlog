@@ -14,6 +14,24 @@ To convert a file:
 
 File is printed to standard out
 
+## Options
+
+```
+Convertes MongoDB 4.4 JSON log format to text format. Writes converted file to stdout
+
+USAGE:
+    mrlog [FLAGS] [path]
+
+FLAGS:
+    -c, --color
+    -h, --help       Prints help information
+        --id         Log id to text log
+    -V, --version    Prints version information
+
+ARGS:
+    <path>    Optional path to the file to read, defaults to stdin
+```
+
 ## Build
 ```cargo build```
 

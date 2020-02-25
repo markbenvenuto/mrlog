@@ -33,11 +33,14 @@ struct LogFormatter {
     re: Regex,
     re_color: Regex,
     use_color: bool,
+    log_id: bool,
 }
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
 
 static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncaught exception"#;
+
+static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
 
 fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
     let r = v[name]
@@ -46,34 +49,45 @@ fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'
     Ok(r)
 }
 
-fn format_line<'a>(
-    date: &str,
-    log_level: &str,
-    component: &str,
-    context: &str,
-    msg: Cow<'a, str>,
-) -> String {
-    format!(
-        "{} {:<2} {:<8} [{}] {}",
-        date, log_level, component, context, msg
-    )
-}
 impl LogFormatter {
-    fn new(use_color: bool) -> LogFormatter {
+    fn new(use_color: bool, log_id: bool) -> LogFormatter {
         LogFormatter {
-            re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
-            re_color : Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
+            re_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
             use_color: use_color,
+            log_id: log_id,
         }
     }
 
     #[cfg(test)]
     fn new_for_test() -> LogFormatter {
         LogFormatter {
-            re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
-            re_color : Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
+            re_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
             use_color: false,
+            log_id: false,
         }
+    }
+
+    fn format_line<'a>(
+        &self,
+        date: &str,
+        log_level: &str,
+        component: &str,
+        context: &str,
+        id: u64,
+        msg: Cow<'a, str>,
+    ) -> String {
+        if self.log_id {
+            return format!(
+                "{} {:<2} {:<8} {:<5} [{}] {}",
+                date, log_level, component, id, context, msg
+            );
+        }
+        format!(
+            "{} {:<2} {:<8} [{}] {}",
+            date, log_level, component, context, msg
+        )
     }
 
     fn maybe_color_text<'a>(&self, s: &'a str) -> Cow<'a, str> {
@@ -97,6 +111,9 @@ impl LogFormatter {
             .with_context(|| format!("Failed to find 't.$date' in JSON log line: {}", s))?;
         let log_level = get_json_str(&parsed, "s", s)?;
         let component = get_json_str(&parsed, "c", s)?;
+        let log_id = parsed["id"]
+            .as_u64()
+            .with_context(|| format!("Failed to find 'id' in JSON log line: {}", s))?;
         let context = get_json_str(&parsed, "ctx", s)?;
         let msg = get_json_str(&parsed, "msg", s)?;
         let attr = &parsed["attr"];
@@ -104,11 +121,12 @@ impl LogFormatter {
         if msg.contains("{") {
             // Handle messages which are just an empty {}
             if msg == "{}" {
-                return Ok(format_line(
+                return Ok(self.format_line(
                     d,
                     log_level,
                     component,
                     context,
+                    log_id,
                     self.maybe_color_text(attr["message"].as_str().with_context(|| {
                         format!("Failed to find 'message' in JSON log line: {}", s)
                     })?),
@@ -132,30 +150,33 @@ impl LogFormatter {
                 String::from(r.unwrap())
             });
 
-            Ok(format_line(
+            Ok(self.format_line(
                 d,
                 log_level,
                 component,
                 context,
+                log_id,
                 self.maybe_color_text(&msg_fmt),
             ))
         } else {
             if !attr.is_empty() {
                 let s = String::from(msg) + attr.dump().as_ref();
-                return Ok(format_line(
+                return Ok(self.format_line(
                     d,
                     log_level,
                     component,
                     context,
+                    log_id,
                     self.maybe_color_text(&s),
                 ));
             }
 
-            Ok(format_line(
+            Ok(self.format_line(
                 d,
                 log_level,
                 component,
                 context,
+                log_id,
                 self.maybe_color_text(msg),
             ))
         }
@@ -221,6 +242,10 @@ struct Cli {
     // Color output - errors are red
     #[structopt(short, long)]
     color: bool,
+
+    /// Log id in text log
+    #[structopt(long)]
+    id: bool,
 }
 
 fn main() {
@@ -229,7 +254,7 @@ fn main() {
     let stdout = io::stdout();
     let mut handle_out = stdout.lock();
 
-    let lf = LogFormatter::new(args.color);
+    let lf = LogFormatter::new(args.color, args.id);
 
     if args.path.is_none() {
         let stdin = io::stdin();
