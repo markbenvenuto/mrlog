@@ -31,10 +31,13 @@ use anyhow::{Context, Result};
 
 struct LogFormatter {
     re: Regex,
+    re_color: Regex,
     use_color: bool,
 }
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
+
+static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncaught exception"#;
 
 fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
     let r = v[name]
@@ -59,6 +62,7 @@ impl LogFormatter {
     fn new(use_color: bool) -> LogFormatter {
         LogFormatter {
             re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
+            re_color : Regex::new(LOG_ERROR_REGEX).unwrap(),
             use_color: use_color,
         }
     }
@@ -67,6 +71,7 @@ impl LogFormatter {
     fn new_for_test() -> LogFormatter {
         LogFormatter {
             re: Regex::new(r#"\{([\w]+)\}"#).unwrap(),
+            re_color : Regex::new(LOG_ERROR_REGEX).unwrap(),
             use_color: false,
         }
     }
@@ -76,7 +81,7 @@ impl LogFormatter {
             return Cow::from(s);
         }
 
-        if s.contains("uncaught exception") || s.contains("failed to load") {
+        if self.re_color.is_match(s) {
             return Cow::Owned(s.red().to_string());
         }
 
