@@ -266,7 +266,11 @@ where
 struct Cli {
     /// Optional path to the file to read, defaults to stdin
     /// In execute mode, a command to run and a list of args
-    path_or_args: Vec<String>,
+    path_or_cmd: Option<String>,
+
+    /// Args to run command with
+    #[structopt(last = true)]
+    cmd_args: Vec<String>,
 
     // Color output - errors are red
     #[structopt(short, long)]
@@ -289,10 +293,10 @@ fn main() {
 
     let lf = LogFormatter::new(args.color, args.id);
 
-    if args.execute {
-        let mut builder = Command::new(&args.path_or_args[0]);
-        for i in 1..args.path_or_args.len() {
-            builder.arg(&args.path_or_args[i]);
+    if args.execute & args.path_or_cmd.is_some() {
+        let mut builder = Command::new(&args.path_or_cmd.unwrap());
+        for arg in args.cmd_args {
+            builder.arg(arg);
         }
 
         let child = builder
@@ -356,14 +360,14 @@ fn main() {
 
         ts.join().unwrap();
         ts2.join().unwrap();
-    } else if args.path_or_args.len() == 0 {
+    } else if args.path_or_cmd.is_none() {
         let stdin = io::stdin();
         let handle_in = stdin.lock();
 
         let lines = io::BufReader::new(handle_in).lines();
         convert_lines(lf, lines, &mut handle_out);
     } else {
-        let p = std::path::PathBuf::from(&args.path_or_args[0]);
+        let p = std::path::PathBuf::from(&args.path_or_cmd.unwrap());
         let lines = read_lines(p).unwrap();
 
         convert_lines(lf, lines, &mut handle_out);
