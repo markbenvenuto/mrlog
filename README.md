@@ -16,7 +16,9 @@ File is printed to standard out
 
 To run a command and colorize its output:
 
-```mrlog -c -e python buildscripts/resmoke.py ...```
+```mrlog -c -e python -- buildscripts/resmoke.py ...```
+
+Separate the command executable from its arguments with `--`.
 
 ## Options
 
