@@ -13,9 +13,9 @@
 // limitations under the License.
 
 use crossbeam_channel::unbounded;
+use std::io;
 use std::sync::Mutex;
 use std::vec::Vec;
-use std::io;
 
 type ByteSender = crossbeam_channel::Sender<std::vec::Vec<u8>>;
 type ByteReceiver = crossbeam_channel::Receiver<std::vec::Vec<u8>>;

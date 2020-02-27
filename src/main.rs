@@ -50,6 +50,17 @@ static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncau
 
 static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
 
+// from duration.h
+const LOG_TIME_SUFFIXES_TUPLE: &'static [(&'static str, &'static str)] = &[
+    ("Nanos", "ns"),
+    ("Micros", "μs"), // GREEK SMALL LETTER MU, 0x03BC or 956 code point
+    ("Millis", "ms"),
+    ("Seconds", "s"),
+    ("Minutes", "min"),
+    ("Hours", "hr"),
+    ("Days", "d"),
+];
+
 fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
     let r = v[name]
         .as_str()
@@ -152,6 +163,16 @@ impl LogFormatter {
                 }
                 let r = v.as_str();
                 if r.is_none() {
+                    // duration attributes are automatically suffixed when written to json so they
+                    // differ from key in the replacement string so try all the known suffixes
+                    for (suffix, short) in LOG_TIME_SUFFIXES_TUPLE {
+                        let key = String::from(&caps[1]) + suffix;
+                        let v = &attr[key];
+                        if v.is_number() {
+                            return v.dump() + &short;
+                        }
+                    }
+
                     println!("WARNING: no str attr for '{}' in {}", &caps[1], s);
                     return String::from("unknown");
                 }
@@ -364,6 +385,14 @@ fn test_log_to_str_with_replacements() {
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":{"abc":123}}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test {\"abc\":123}"};
+}
+
+#[test]
+fn test_log_to_str_with_duration_replacements() {
+    let lf = LogFormatter::new_for_test();
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {duration}","attr":{"durationMillis":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123ms"};
+
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {duration}","attr":{"durationMicros":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123μs"};
 }
 
 #[test]
