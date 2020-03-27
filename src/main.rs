@@ -26,6 +26,7 @@ use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::vec::Vec;
@@ -283,13 +284,36 @@ struct Cli {
     /// Execute command and process output
     #[structopt(short, long)]
     execute: bool,
+
+    /// Output file, stdout if not present
+    #[structopt(short, long, parse(from_os_str))]
+    output: Option<PathBuf>,
 }
 
-fn main() {
+fn get_writer<'a>(
+    file_name_buf: Option<PathBuf>,
+    stdout: &'a io::Stdout,
+) -> Result<Box<dyn io::Write + 'a>> {
+
+    match file_name_buf {
+        Some(file_name) => {
+            Ok(Box::new(File::create(file_name).with_context(|| {
+                format!("Failed to open file 'xxx' for output")
+            })?))
+        }
+
+        None => {
+            let out_lock = stdout.lock();
+            Ok(Box::new(out_lock))
+        }
+    }
+}
+
+fn main() -> Result<()> {
     let args = Cli::from_args();
 
-    let stdout = io::stdout();
-    let mut handle_out = stdout.lock();
+    let stdout_handle = io::stdout();
+    let mut writer = get_writer(args.output, &stdout_handle)?;
 
     let lf = LogFormatter::new(args.color, args.id);
 
@@ -302,16 +326,21 @@ fn main() {
         let child = builder
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+            .spawn()?;
 
         let ssf = SharedStreamFactory::new();
         let mut stdout_writer = ssf.get_writer();
 
         let mut stderr_writer = ssf.get_writer();
 
-        let mut output_out = child.stdout.ok_or_else(|| "Bad???").unwrap();
-        let mut output_err = child.stderr.ok_or_else(|| "Bad???").unwrap();
+        let mut output_out = child
+            .stdout
+            .ok_or_else(|| "Failed to open child pipe's stdout")
+            .unwrap();
+        let mut output_err = child
+            .stderr
+            .ok_or_else(|| "Failed to open child pipe's stderr")
+            .unwrap();
 
         let ts = thread::spawn(move || {
             let mut v = Vec::new();
@@ -356,22 +385,29 @@ fn main() {
         let std_reader = ssf.get_reader();
 
         let lines = io::BufReader::new(std_reader).lines();
-        convert_lines(lf, lines, &mut handle_out);
+        convert_lines(lf, lines, &mut writer);
 
         ts.join().unwrap();
         ts2.join().unwrap();
-    } else if args.path_or_cmd.is_none() {
-        let stdin = io::stdin();
-        let handle_in = stdin.lock();
-
-        let lines = io::BufReader::new(handle_in).lines();
-        convert_lines(lf, lines, &mut handle_out);
     } else {
-        let p = std::path::PathBuf::from(&args.path_or_cmd.unwrap());
-        let lines = read_lines(p).unwrap();
+        match args.path_or_cmd {
+            Some(file_name) => {
+                let p = std::path::PathBuf::from(file_name);
+                let lines = read_lines(p)?;
 
-        convert_lines(lf, lines, &mut handle_out);
+                convert_lines(lf, lines, &mut writer);
+            }
+            None => {
+                let stdin = io::stdin();
+                let handle_in = stdin.lock();
+
+                let lines = io::BufReader::new(handle_in).lines();
+                convert_lines(lf, lines, &mut writer);
+            }
+        }
     }
+
+    Ok(())
 }
 
 #[test]

@@ -35,6 +35,9 @@ FLAGS:
         --id         Log id in text log
     -V, --version    Prints version information
 
+OPTIONS:
+    -o, --output <output>    Output file, stdout if not present
+
 ARGS:
     <path-or-args>...    Optional path to the file to read, defaults to stdin In execute mode, a command to run and
                          a list of args
