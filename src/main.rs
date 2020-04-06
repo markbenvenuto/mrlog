@@ -156,10 +156,7 @@ impl LogFormatter {
             let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
                 // println!("{}", &caps[1]);
                 let v = &attr[&caps[1]];
-                if v.is_object() {
-                    return v.dump();
-                }
-                if v.is_number() {
+                if v.is_object() || v.is_number() || v.is_boolean() {
                     return v.dump();
                 }
                 let r = v.as_str();
@@ -425,6 +422,8 @@ fn test_log_to_str_with_replacements() {
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {test1}","attr":{"test1":{"abc":123}}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test {\"abc\":123}"};
+
+    assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-04-06T16:34:32.964-04:00"},"s":"I", "c":"STORAGE", "id":46712010,"ctx":"initandlisten","msg":"should read at last applied. {val}","attr":{"val":true}}"#).unwrap(), "2020-04-06T16:34:32.964-04:00 I  STORAGE  [initandlisten] should read at last applied. true"};
 }
 
 #[test]
