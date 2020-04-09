@@ -36,6 +36,7 @@ FLAGS:
     -V, --version    Prints version information
 
 OPTIONS:
+    -d, --decode <decode>    Decode backtraces with DWARF information from binary, split symbols not supported
     -o, --output <output>    Output file, stdout if not present
 
 ARGS:
