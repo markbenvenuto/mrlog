@@ -2,6 +2,13 @@
 
 Converts MongoDB 4.4 log format to MongoDB 4.2 and prior style text logs
 
+## Features
+* Converts JSON to text
+* Optional output coloring
+* Subprocess execution
+* Demangles C++ names automatically
+* Optional decoding of stacktraces using DWARF to give line numbers (Linux only)
+
 ## Run
 
 To read from standard in:
@@ -14,11 +21,18 @@ To convert a file:
 
 File is printed to standard out
 
+**Advanced Features:**
+
 To run a command and colorize its output:
 
 ```mrlog -c -e python -- buildscripts/resmoke.py ...```
 
 Separate the command executable from its arguments with `--`.
+
+To decode stacktraces using DWARF fromm mongod (Linux only).
+
+```mrlog --decode=mongod <optional file>```
+
 
 ## Options
 
@@ -45,7 +59,11 @@ ARGS:
 ```
 
 ## Build
-```cargo build```
+Get Rust from https://rustup.rs/.
+
+```cargo build --release```
+
+**Note**: Release builds are needed for good performance for decoding DWARF.
 
 ## License
 

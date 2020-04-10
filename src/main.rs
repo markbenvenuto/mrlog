@@ -342,12 +342,21 @@ impl LogFormatter {
         let ret = self.objs.contains_key(path);
 
         if !ret {
-            let file = File::open(path).with_context(|| format!("Failed to open file '{}' for dwarf and symbols", path) )?;
+            let file = File::open(path)
+                .with_context(|| format!("Failed to open file '{}' for dwarf and symbols", path))?;
 
-            let m1 = unsafe { memmap2::Mmap::map(&file).with_context(|| format!("Failed to mmap file '{}' for dwarf and symbols", path))? };
+            let m1 = unsafe {
+                memmap2::Mmap::map(&file).with_context(|| {
+                    format!("Failed to mmap file '{}' for dwarf and symbols", path)
+                })?
+            };
             let r1 = rent_object::RentObject::new(
                 Rc::new(m1),
-                |m3| Rc::new(object::File::parse(m3).expect(&format!("Failed to parse file '{}'", path))) ,
+                |m3| {
+                    Rc::new(
+                        object::File::parse(m3).expect(&format!("Failed to parse file '{}'", path)),
+                    )
+                },
                 |a1, _| Rc::new(a1.symbol_map()),
             );
 
@@ -590,8 +599,13 @@ impl LogFormatter {
                 // Only mac and linux have processInfo
                 // Note: decoding only works on Linux for now since gimli::Object does not support multi-arch binaries on Mac
                 // TODO - use goblin instead
-                if cfg!(target_os = "linux") && msg.starts_with("BACKTRACE") && attr["bt"].has_key("processInfo")
-                && attr["bt"]["processInfo"]["somap"][0].has_key("elfType") {
+                // See https://github.com/rust-lang/backtrace-rs/blob/ac175e25d15e7bd2c870cd4d06e141bc62bbf59e/src/symbolize/gimli.rs#L38-L61
+                if cfg!(target_os = "linux")
+                    && self.decode.is_some()
+                    && msg.starts_with("BACKTRACE")
+                    && attr["bt"].has_key("processInfo")
+                    && attr["bt"]["processInfo"]["somap"][0].has_key("elfType")
+                {
                     return self.demangle_backtrace(
                         &attr["bt"],
                         s,
