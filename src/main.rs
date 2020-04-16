@@ -457,7 +457,16 @@ impl LogFormatter {
                                     context,
                                     Cow::Owned(format!(
                                         "{} at {}:{}\n",
-                                        frame.function.unwrap().demangle()?,
+                                        frame.function.map_or_else(
+                                            || format!("<unknown>+{}", offset_orig),
+                                            |f| f
+                                                .demangle()
+                                                .unwrap_or_else(|_| Cow::Owned(format!(
+                                                    "demangle failed+{}",
+                                                    offset_orig
+                                                )))
+                                                .to_string()
+                                        ),
                                         loc.file.unwrap_or("<unknown>"),
                                         loc.line.unwrap_or(0)
                                     )),
@@ -474,7 +483,16 @@ impl LogFormatter {
                                     context,
                                     Cow::Owned(format!(
                                         "{}\n",
-                                        frame.function.unwrap().demangle()?
+                                        frame.function.map_or_else(
+                                            || format!("<unknown>+{}", offset_orig),
+                                            |f| f
+                                                .demangle()
+                                                .unwrap_or_else(|_| Cow::Owned(format!(
+                                                    "demangle failed+{}",
+                                                    offset_orig
+                                                )))
+                                                .to_string()
+                                        ),
                                     )),
                                 ),
                             )?;
@@ -484,7 +502,12 @@ impl LogFormatter {
             }
 
             if count == 0 {
-                let a = self.get_symbol_name(oe.path.as_ref().unwrap(), offset);
+                let a = self.get_symbol_name(
+                    oe.path
+                        .as_ref()
+                        .unwrap_or(&self.decode.as_ref().unwrap().to_str().unwrap().to_owned()),
+                    offset,
+                );
                 std::fmt::Write::write_str(
                     &mut ret,
                     &LogFormatter::format_line_basic(
