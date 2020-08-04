@@ -656,7 +656,7 @@ impl LogFormatter {
                     }
                 }
 
-                let s = String::from(msg) + attr.dump().as_ref();
+                let s = String::from(msg) + " " + attr.dump().as_ref();
                 return Ok(self.format_line(
                     d,
                     log_level,
