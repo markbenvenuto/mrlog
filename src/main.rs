@@ -29,10 +29,15 @@ extern crate ctrlc;
 extern crate rental;
 
 // TODO - make mac and linux specific
+#[cfg(not(target_os = "windows"))]
 extern crate nix;
+#[cfg(not(target_os = "windows"))]
 use nix::unistd::Pid;
+#[cfg(not(target_os = "windows"))]
 use nix::sys::signal::{self, Signal};
 
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
@@ -40,7 +45,6 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
 use std::string::String;
 use std::string::ToString;
 use std::thread;
@@ -73,7 +77,7 @@ rental! {
         pub struct RentObject{
             lib: Rc<memmap2::Mmap>,
             obj: Rc<object::File<'lib>>,
-            sym: Rc<object::SymbolMap<'lib>>,
+            sym: Rc<object::SymbolMap<object::SymbolMapName<'lib>>>,
         }
     }
 }
@@ -406,7 +410,7 @@ impl LogFormatter {
         let o = self.objs.get(path).unwrap();
 
         o.rent_all(|x| match x.sym.get(address) {
-            Some(sym) => sym.name().map_or("<unknown1>".to_owned(), |s| s.to_owned()),
+            Some(sym) => sym.name().to_owned(),
             None => format!("{}+<{:#x}>", path, address),
         })
     }
@@ -802,6 +806,14 @@ fn send_ctrl_c(
     signal::kill(Pid::from_raw(pid), Signal::SIGINT).unwrap();
 }
 
+#[cfg(target_os = "windows")]
+fn send_ctrl_c(
+    pid: i32,
+) {
+    // TODO - untested if this kills mrlog or just the child process
+    winapi::um::wincon::GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_C_EVENT, pid);
+}
+
 fn main() -> Result<()> {
     let args = Cli::from_args();
 
@@ -861,7 +873,7 @@ fn main() -> Result<()> {
                         let r = stdout_writer.write_all(&v.as_slice()[0..size]);
                         if r.is_err() {
                             eprintln!("Unexpected error writing to standard out writer {:?}", r);
-                            break;  
+                            break;
                         }
                     }
                     Err(e) => {
@@ -885,7 +897,7 @@ fn main() -> Result<()> {
                         let r= stderr_writer.write_all(&v.as_slice()[0..size]);
                         if r.is_err() {
                             eprintln!("Unexpected error writing to standard err writer {:?}", r);
-                            break;  
+                            break;
                         }
                     }
                     Err(e) => {
