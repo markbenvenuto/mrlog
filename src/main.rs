@@ -16,13 +16,13 @@
 extern crate addr2line;
 extern crate cpp_demangle;
 extern crate crossbeam_channel;
+extern crate ctrlc;
 extern crate json;
 #[cfg(target_os = "linux")]
 extern crate memmap2;
 #[cfg(target_os = "linux")]
 extern crate object;
 extern crate regex;
-extern crate ctrlc;
 
 #[cfg(target_os = "linux")]
 #[macro_use]
@@ -32,12 +32,10 @@ extern crate rental;
 #[cfg(not(target_os = "windows"))]
 extern crate nix;
 #[cfg(not(target_os = "windows"))]
-use nix::unistd::Pid;
-#[cfg(not(target_os = "windows"))]
 use nix::sys::signal::{self, Signal};
+#[cfg(not(target_os = "windows"))]
+use nix::unistd::Pid;
 
-#[cfg(target_os = "linux")]
-use std::rc::Rc;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::File;
@@ -45,6 +43,8 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::string::String;
 use std::string::ToString;
 use std::thread;
@@ -799,19 +799,117 @@ fn get_writer<'a>(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn send_ctrl_c(
-    pid: i32,
-) {
+fn send_ctrl_c(pid: i32) {
     // Send SIGINT to child process to trigger Ctrl-C
     signal::kill(Pid::from_raw(pid), Signal::SIGINT).unwrap();
 }
 
 #[cfg(target_os = "windows")]
-fn send_ctrl_c(
-    pid: i32,
-) {
+fn send_ctrl_c(pid: i32) {
     // TODO - untested if this kills mrlog or just the child process
     winapi::um::wincon::GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_C_EVENT, pid);
+}
+
+fn run_command(
+    cmd: &str,
+    cmd_args: &Vec<String>,
+    lf: &mut LogFormatter,
+    writer: &mut dyn io::Write,
+) -> Result<()> {
+    let mut builder = Command::new(cmd);
+    for arg in cmd_args {
+        builder.arg(arg);
+    }
+
+    let child = builder
+        .stderr(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+
+    let child_id = child.id() as i32;
+    ctrlc::set_handler(move || {
+        eprintln!("mrlog received Ctrl+C!");
+
+        // Send SIGINT to child process to trigger Ctrl-C
+        send_ctrl_c(child_id);
+
+        // TODO - wait for exit
+        // child.wait();
+        // Sleep for now and hope the child process exists
+        thread::sleep(std::time::Duration::from_secs(120));
+    })?;
+
+    let ssf = SharedStreamFactory::new();
+    let mut stdout_writer = ssf.get_writer();
+
+    let mut stderr_writer = ssf.get_writer();
+
+    let mut output_out = child
+        .stdout
+        .ok_or_else(|| "Failed to open child pipe's stdout")
+        .unwrap();
+    let mut output_err = child
+        .stderr
+        .ok_or_else(|| "Failed to open child pipe's stderr")
+        .unwrap();
+
+    let ts = thread::spawn(move || {
+        let mut v = Vec::new();
+        v.resize(8192, 0);
+        loop {
+            let ret = output_out.read(v.as_mut_slice());
+            match ret {
+                Ok(size) => {
+                    if size == 0 {
+                        break;
+                    }
+                    let r = stdout_writer.write_all(&v.as_slice()[0..size]);
+                    if r.is_err() {
+                        eprintln!("Unexpected error writing to standard out writer {:?}", r);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Unexpected error reading from standard out {:?}", e);
+                    break;
+                }
+            };
+        }
+    });
+
+    let ts2 = thread::spawn(move || {
+        let mut v = Vec::new();
+        v.resize(8192, 0);
+        loop {
+            let ret = output_err.read(v.as_mut_slice());
+            match ret {
+                Ok(size) => {
+                    if size == 0 {
+                        break;
+                    }
+                    let r = stderr_writer.write_all(&v.as_slice()[0..size]);
+                    if r.is_err() {
+                        eprintln!("Unexpected error writing to standard err writer {:?}", r);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Unexpected error reading from standard err {:?}", e);
+                    break;
+                }
+            };
+        }
+    });
+
+    let std_reader = ssf.get_reader();
+
+    let lines = io::BufReader::new(std_reader).lines();
+    convert_lines(lf, lines, writer);
+
+    ts.join().unwrap();
+    ts2.join().unwrap();
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -823,98 +921,10 @@ fn main() -> Result<()> {
     let mut lf = LogFormatter::new(args.color, args.id, args.decode);
 
     if args.execute & args.path_or_cmd.is_some() {
-        let mut builder = Command::new(&args.path_or_cmd.unwrap());
-        for arg in args.cmd_args {
-            builder.arg(arg);
-        }
+        let cmd = &args.path_or_cmd.unwrap();
+        let cmd_args = args.cmd_args;
 
-        let child = builder
-            .stderr(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()?;
-
-        let child_id = child.id() as i32;
-        ctrlc::set_handler(move || {
-            eprintln!("mrlog received Ctrl+C!");
-
-            // Send SIGINT to child process to trigger Ctrl-C
-            send_ctrl_c(child_id);
-
-            // TODO - wait for exit
-            // child.wait();
-            // Sleep for now and hope the child process exists
-            thread::sleep(std::time::Duration::from_secs(120));
-        })?;
-
-        let ssf = SharedStreamFactory::new();
-        let mut stdout_writer = ssf.get_writer();
-
-        let mut stderr_writer = ssf.get_writer();
-
-        let mut output_out = child
-            .stdout
-            .ok_or_else(|| "Failed to open child pipe's stdout")
-            .unwrap();
-        let mut output_err = child
-            .stderr
-            .ok_or_else(|| "Failed to open child pipe's stderr")
-            .unwrap();
-
-        let ts = thread::spawn(move || {
-            let mut v = Vec::new();
-            v.resize(8192, 0);
-            loop {
-                let ret = output_out.read(v.as_mut_slice());
-                match ret {
-                    Ok(size) => {
-                        if size == 0 {
-                            break;
-                        }
-                        let r = stdout_writer.write_all(&v.as_slice()[0..size]);
-                        if r.is_err() {
-                            eprintln!("Unexpected error writing to standard out writer {:?}", r);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Unexpected error reading from standard out {:?}", e);
-                        break;
-                    }
-                };
-            }
-        });
-
-        let ts2 = thread::spawn(move || {
-            let mut v = Vec::new();
-            v.resize(8192, 0);
-            loop {
-                let ret = output_err.read(v.as_mut_slice());
-                match ret {
-                    Ok(size) => {
-                        if size == 0 {
-                            break;
-                        }
-                        let r= stderr_writer.write_all(&v.as_slice()[0..size]);
-                        if r.is_err() {
-                            eprintln!("Unexpected error writing to standard err writer {:?}", r);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Unexpected error reading from standard err {:?}", e);
-                        break;
-                    }
-                };
-            }
-        });
-
-        let std_reader = ssf.get_reader();
-
-        let lines = io::BufReader::new(std_reader).lines();
-        convert_lines(&mut lf, lines, &mut writer);
-
-        ts.join().unwrap();
-        ts2.join().unwrap();
+        run_command(&cmd, &cmd_args, &mut lf, &mut writer)?
     } else {
         match args.path_or_cmd {
             Some(file_name) => {
