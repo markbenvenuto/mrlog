@@ -148,6 +148,8 @@ impl std::ops::Drop for SharedStreamWriter {
     fn drop(&mut self) {
         // Send any empty buffer to signal the reader that we are done
         let v = Vec::new();
-        self.sender.send(v).expect("Huh");
+        if let Err(send_err) = self.sender.send(v) {
+            eprintln!("ERROR: Failed to send message {:?}", send_err.into_inner());
+        }
     }
 }

@@ -22,10 +22,16 @@ extern crate memmap2;
 #[cfg(target_os = "linux")]
 extern crate object;
 extern crate regex;
+extern crate ctrlc;
 
 #[cfg(target_os = "linux")]
 #[macro_use]
 extern crate rental;
+
+// TODO - make mac and linux specific
+extern crate nix;
+use nix::unistd::Pid;
+use nix::sys::signal::{self, Signal};
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -34,7 +40,7 @@ use std::io::{self, BufRead, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::rc::Rc;
+use std::sync::Arc;
 use std::string::String;
 use std::string::ToString;
 use std::thread;
@@ -527,12 +533,12 @@ impl LogFormatter {
     #[cfg(not(target_os = "linux"))]
     fn demangle_backtrace(
         &mut self,
-        bt: &json::JsonValue,
+        _bt: &json::JsonValue,
         _s: &str,
-        date: &str,
-        log_level: &str,
-        component: &str,
-        context: &str,
+        _date: &str,
+        _log_level: &str,
+        _component: &str,
+        _context: &str,
         _id: u64,
     ) -> Result<String> {
         Ok(String::new())
@@ -716,14 +722,26 @@ where
             let convert_result = lf.fuzzy_log_to_str(&line_opt.as_str());
             match convert_result {
                 Ok(s) => {
-                    writer.write_all(s.as_bytes()).unwrap();
+                    let r = writer.write_all(s.as_bytes());
+                    if r.is_err() {
+                        eprintln!("Error: {:?}", r);
+                        return;
+                    }
                 }
                 Err(m) => {
                     // TODO - format error message better
-                    writer.write_all(m.to_string().as_bytes()).unwrap();
+                    let r = writer.write_all(m.to_string().as_bytes());
+                    if r.is_err() {
+                        eprintln!("Error: {:?}", r);
+                        return;
+                    }
                 }
             }
-            writer.write_all(lf_byte.as_ref()).unwrap();
+            let r = writer.write_all(lf_byte.as_ref());
+            if r.is_err() {
+                eprintln!("Error: {:?}", r);
+                return;
+            }
         }
     }
 }
@@ -776,6 +794,14 @@ fn get_writer<'a>(
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+fn send_ctrl_c(
+    pid: i32,
+) {
+    // Send SIGINT to child process to trigger Ctrl-C
+    signal::kill(Pid::from_raw(pid), Signal::SIGINT).unwrap();
+}
+
 fn main() -> Result<()> {
     let args = Cli::from_args();
 
@@ -794,6 +820,19 @@ fn main() -> Result<()> {
             .stderr(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
+
+        let child_id = child.id() as i32;
+        ctrlc::set_handler(move || {
+            eprintln!("mrlog received Ctrl+C!");
+
+            // Send SIGINT to child process to trigger Ctrl-C
+            send_ctrl_c(child_id);
+
+            // TODO - wait for exit
+            // child.wait();
+            // Sleep for now and hope the child process exists
+            thread::sleep(std::time::Duration::from_secs(120));
+        })?;
 
         let ssf = SharedStreamFactory::new();
         let mut stdout_writer = ssf.get_writer();
@@ -819,7 +858,11 @@ fn main() -> Result<()> {
                         if size == 0 {
                             break;
                         }
-                        stdout_writer.write_all(&v.as_slice()[0..size]).unwrap();
+                        let r = stdout_writer.write_all(&v.as_slice()[0..size]);
+                        if r.is_err() {
+                            eprintln!("Unexpected error writing to standard out writer {:?}", r);
+                            break;  
+                        }
                     }
                     Err(e) => {
                         eprintln!("Unexpected error reading from standard out {:?}", e);
@@ -839,7 +882,11 @@ fn main() -> Result<()> {
                         if size == 0 {
                             break;
                         }
-                        stderr_writer.write_all(&v.as_slice()[0..size]).unwrap();
+                        let r= stderr_writer.write_all(&v.as_slice()[0..size]);
+                        if r.is_err() {
+                            eprintln!("Unexpected error writing to standard err writer {:?}", r);
+                            break;  
+                        }
                     }
                     Err(e) => {
                         eprintln!("Unexpected error reading from standard err {:?}", e);
