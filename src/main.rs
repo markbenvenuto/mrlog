@@ -36,7 +36,7 @@ use nix::sys::signal::{self, Signal};
 #[cfg(not(target_os = "windows"))]
 use nix::unistd::Pid;
 
-use std::borrow::Cow;
+use std::{borrow::Cow, fs};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
@@ -68,6 +68,7 @@ mod shared_stream;
 use shared_stream::SharedStreamFactory;
 
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
+// TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
 #[cfg(target_os = "linux")]
 rental! {
     pub mod rent_object {
@@ -96,7 +97,7 @@ struct LogFormatter {
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
 
-static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncaught exception"#;
+static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncaught exception|FAIL"#;
 
 static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
 
@@ -777,24 +778,105 @@ struct Cli {
     #[structopt(short, long, parse(from_os_str))]
     output: Option<PathBuf>,
 
+
+    /// If a output file alread exists, rename with .bak suffix
+    #[structopt(long)]
+    backup: bool,
+
+    /// Tee ouput to output file and stdout
+    #[structopt(short, long)]
+    tee: bool,
+
     /// Decode backtraces with DWARF information from binary, split symbols not supported
     #[structopt(short, long, parse(from_os_str))]
     decode: Option<PathBuf>,
 }
 
+struct TeeWriter<'a> {
+    writers: Vec<Box<dyn io::Write + 'a>> ,
+}
+
+impl<'a> TeeWriter<'a> {
+    fn new(writers: Vec<Box<dyn io::Write + 'a>> ) -> TeeWriter<'a> {
+        TeeWriter
+        {
+            writers: writers,
+        }
+    }
+}
+
+impl <'a> io::Write for TeeWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut size : usize = 0;
+        for writer in self.writers.iter_mut() {
+            let r = writer.write(buf);
+            if let Ok(s)  = r{
+                if s != 0 && size != 0 && size != s{
+                    panic!("Failed to write same size to writers - {} - {}", s, size);
+                }
+                size = s;
+
+            } else {
+                return r;
+            }
+
+        }
+        return Ok(size)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        for writer in self.writers.iter_mut() {
+            let r = writer.flush();
+            if r.is_err(){
+                return r;
+            }
+        }
+        return Ok(())
+    }
+}
+
+
 fn get_writer<'a>(
     file_name_buf: Option<PathBuf>,
     stdout: &'a io::Stdout,
+    tee: bool,
+    backup:bool,
 ) -> Result<Box<dyn io::Write + 'a>> {
-    match file_name_buf.as_ref() {
-        Some(file_name) => Ok(Box::new(File::create(file_name).with_context(|| {
+    let writer: Box<dyn io::Write + 'a> = match file_name_buf.as_ref() {
+        Some(file_name) => {
+        if backup && file_name.as_path().exists() {
+            let new_file_str = format!("{}.bak", file_name.as_path().display());
+            let new_file = Path::new(&new_file_str);
+            fs::rename(file_name, new_file)?;
+        }
+
+        Box::new(File::create(file_name).with_context(|| {
             format!("Failed to open file '{:#?}' for output", file_name)
-        })?)),
+        })?)
+    },
 
         None => {
+            // TODO - throw error if tee == true
+
             let out_lock = stdout.lock();
-            Ok(Box::new(out_lock))
+            Box::new(out_lock)
         }
+    };
+
+    // TODO - strip out ANSI codes when writing to a file.
+    // see https://en.wikipedia.org/wiki/ANSI_escape_code
+    // We need to look for "\x1B[" some text and then 'm'
+    if tee {
+        let mut writers = Vec::<Box<dyn io::Write + 'a>>::new();
+        writers.push(writer);
+
+        let out_lock = stdout.lock();
+        writers.push(Box::new(out_lock));
+
+        Ok(Box::new(TeeWriter::new(writers)))
+
+    } else {
+        Ok(writer)
     }
 }
 
@@ -916,7 +998,7 @@ fn main() -> Result<()> {
     let args = Cli::from_args();
 
     let stdout_handle = io::stdout();
-    let mut writer = get_writer(args.output, &stdout_handle)?;
+    let mut writer = get_writer(args.output, &stdout_handle, args.tee, args.backup)?;
 
     let mut lf = LogFormatter::new(args.color, args.id, args.decode);
 
