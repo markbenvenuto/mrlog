@@ -363,8 +363,9 @@ impl LogFormatter {
             let r1 = RentObject::new(
                 Rc::new(m1),
                 |m3| {
+                    let s : &[u8] = m3.as_ref();
                     Rc::new(
-                        object::File::parse(m3).expect(&format!("Failed to parse file '{}'", path)),
+                        object::File::parse(s).expect(&format!("Failed to parse file '{}'", path)),
                     )
                 },
                 |a1,| Rc::new(a1.symbol_map()),
