@@ -36,6 +36,7 @@ use nix::sys::signal::{self, Signal};
 use nix::unistd::Pid;
 
 use std::{borrow::Cow, fs};
+#[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, Read, Write};
@@ -68,9 +69,10 @@ use shared_stream::SharedStreamFactory;
 
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
 // TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
-// #[cfg(target_os = "linux")]
+#[cfg(target_os = "linux")]
 use ouroboros::self_referencing;
 
+#[cfg(target_os = "linux")]
 #[self_referencing]
 pub struct RentObject{
     lib: Rc<memmap2::Mmap>,
@@ -889,7 +891,9 @@ fn send_ctrl_c(pid: i32) {
 #[cfg(target_os = "windows")]
 fn send_ctrl_c(pid: i32) {
     // TODO - untested if this kills mrlog or just the child process
-    winapi::um::wincon::GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_C_EVENT, pid);
+    unsafe {
+        winapi::um::wincon::GenerateConsoleCtrlEvent(winapi::um::wincon::CTRL_C_EVENT, pid as u32);
+    }
 }
 
 fn run_command(
