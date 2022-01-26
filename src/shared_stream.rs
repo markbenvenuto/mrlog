@@ -81,7 +81,7 @@ impl SharedStreamFactory {
 impl io::Read for SharedStreamReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         // Return buffered data first before calling into channel
-        if self.buffer.len() > 0 {
+        if !self.buffer.is_empty() {
             let min_len = std::cmp::min(buf.len(), self.buffer.len());
             buf[0..min_len].copy_from_slice(&self.buffer[0..min_len]);
             if self.buffer.len() > min_len {
@@ -102,7 +102,7 @@ impl io::Read for SharedStreamReader {
             let ret = self.receiver.recv();
             match ret {
                 Ok(v) => {
-                    if v.len() == 0 {
+                    if v.is_empty() {
                         self.writers -= 1;
 
                         if self.writers > 0 {

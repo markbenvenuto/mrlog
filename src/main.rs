@@ -24,9 +24,8 @@ extern crate memmap2;
 extern crate object;
 extern crate regex;
 
-#[cfg(target_os = "linux")]
-#[macro_use]
-extern crate rental;
+// #[cfg(target_os = "linux")]
+//use ouroboros::self_referencing;
 
 // TODO - make mac and linux specific
 #[cfg(not(target_os = "windows"))]
@@ -69,18 +68,18 @@ use shared_stream::SharedStreamFactory;
 
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
 // TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
-#[cfg(target_os = "linux")]
-rental! {
-    pub mod rent_object {
-        use std::rc::Rc;
+// #[cfg(target_os = "linux")]
+use ouroboros::self_referencing;
 
-        #[rental(clone)]
-        pub struct RentObject{
-            lib: Rc<memmap2::Mmap>,
-            obj: Rc<object::File<'lib>>,
-            sym: Rc<object::SymbolMap<object::SymbolMapName<'lib>>>,
-        }
-    }
+#[self_referencing]
+pub struct RentObject{
+    lib: Rc<memmap2::Mmap>,
+    #[borrows(lib)]
+    #[covariant]
+    obj: Rc<object::File<'this>>,
+    #[borrows(obj)]
+    #[covariant]
+    sym: Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
 }
 
 struct LogFormatter {
@@ -90,7 +89,7 @@ struct LogFormatter {
     log_id: bool,
     decode: Option<PathBuf>,
     #[cfg(target_os = "linux")]
-    objs: HashMap<String, rent_object::RentObject>,
+    objs: HashMap<String, RentObject>,
     #[cfg(target_os = "linux")]
     ctxs: HashMap<String, addr2line::Context<gimli::EndianRcSlice<gimli::RunTimeEndian>>>,
 }
@@ -160,7 +159,7 @@ fn parse_somap(o: &json::JsonValue) -> Result<HashMap<String, ObjectEntry>> {
         }
     }
 
-    return Ok(map);
+    Ok(map)
 }
 
 impl LogFormatter {
@@ -168,9 +167,9 @@ impl LogFormatter {
         LogFormatter {
             re: Regex::new(LOG_ATTR_REGEX).unwrap(),
             re_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
-            use_color: use_color,
-            log_id: log_id,
-            decode: decode,
+            use_color,
+            log_id,
+            decode,
             #[cfg(target_os = "linux")]
             ctxs: HashMap::new(),
             #[cfg(target_os = "linux")]
@@ -361,14 +360,14 @@ impl LogFormatter {
                     format!("Failed to mmap file '{}' for dwarf and symbols", path)
                 })?
             };
-            let r1 = rent_object::RentObject::new(
+            let r1 = RentObject::new(
                 Rc::new(m1),
                 |m3| {
                     Rc::new(
                         object::File::parse(m3).expect(&format!("Failed to parse file '{}'", path)),
                     )
                 },
-                |a1, _| Rc::new(a1.symbol_map()),
+                |a1,| Rc::new(a1.symbol_map()),
             );
 
             self.objs.insert(path.to_string(), r1);
@@ -397,7 +396,7 @@ impl LogFormatter {
         if !ret {
             let o = self.objs.get(path).unwrap();
 
-            let b2 = o.rent_all(|x| addr2line::Context::new(x.obj))?;
+            let b2 = o.with_obj(|x| addr2line::Context::new(x.as_ref()))?;
 
             self.ctxs.insert(path.to_string(), b2);
         }
@@ -410,7 +409,7 @@ impl LogFormatter {
     fn get_symbol_name(&self, path: &str, address: u64) -> String {
         let o = self.objs.get(path).unwrap();
 
-        o.rent_all(|x| match x.sym.get(address) {
+        o.with_sym(|x| match x.get(address) {
             Some(sym) => sym.name().to_owned(),
             None => format!("{}+<{:#x}>", path, address),
         })
@@ -565,7 +564,7 @@ impl LogFormatter {
         let msg = get_json_str(&parsed, "msg", s)?;
         let attr = &parsed["attr"];
 
-        if msg.contains("{") {
+        if msg.contains('{') {
             // Handle messages which are just an empty {}
             if msg == "{}" {
                 return Ok(self.format_line(
@@ -821,7 +820,7 @@ impl <'a> io::Write for TeeWriter<'a> {
             }
 
         }
-        return Ok(size)
+        Ok(size)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -831,7 +830,7 @@ impl <'a> io::Write for TeeWriter<'a> {
                 return r;
             }
         }
-        return Ok(())
+        Ok(())
     }
 }
 
@@ -894,7 +893,7 @@ fn send_ctrl_c(pid: i32) {
 
 fn run_command(
     cmd: &str,
-    cmd_args: &Vec<String>,
+    cmd_args: &[String],
     lf: &mut LogFormatter,
     writer: &mut dyn io::Write,
 ) -> Result<()> {
@@ -928,11 +927,11 @@ fn run_command(
 
     let mut output_out = child
         .stdout
-        .ok_or_else(|| "Failed to open child pipe's stdout")
+        .ok_or("Failed to open child pipe's stdout")
         .unwrap();
     let mut output_err = child
         .stderr
-        .ok_or_else(|| "Failed to open child pipe's stderr")
+        .ok_or("Failed to open child pipe's stderr")
         .unwrap();
 
     let ts = thread::spawn(move || {
