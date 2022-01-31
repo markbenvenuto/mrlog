@@ -70,19 +70,63 @@ use shared_stream::SharedStreamFactory;
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
 // TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
 #[cfg(target_os = "linux")]
+mod rent {
 use ouroboros::self_referencing;
+use std::rc::Rc;
 
-#[cfg(target_os = "linux")]
+
 #[self_referencing]
 pub struct RentObject{
     lib: Rc<memmap2::Mmap>,
+
     #[borrows(lib)]
     #[covariant]
     obj: Rc<object::File<'this>>,
+
     #[borrows(obj)]
     #[covariant]
     sym: Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
 }
+
+// Since the new and other functions are not public, we have to overcome E0624 with this hack
+pub fn call_new(
+    lib: Rc<memmap2::Mmap>,
+    obj_builder: impl for<'this> ::core::ops::FnOnce(
+        &'this Rc<memmap2::Mmap>,
+    )
+        -> Rc<object::File<'this>>,
+    sym_builder: impl for<'this> ::core::ops::FnOnce(
+        &'this Rc<object::File<'this>>,
+    ) -> Rc<
+        object::SymbolMap<object::SymbolMapName<'this>>,
+    >,
+
+
+) -> RentObject {
+    RentObject::new(lib, obj_builder, sym_builder )
+}
+
+pub fn call_with_obj<'outer_borrow, ReturnType>(
+    ro: &'outer_borrow RentObject,
+    user: impl for<'this> ::core::ops::FnOnce(
+        &'outer_borrow Rc<object::File<'this>>,
+    ) -> ReturnType,
+) -> ReturnType {
+    ro.with_obj(user)
+}
+
+pub fn call_with_sym<'outer_borrow, ReturnType>(
+    ro: &'outer_borrow RentObject,
+
+    user: impl for<'this> ::core::ops::FnOnce(
+        &'outer_borrow Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
+    ) -> ReturnType,
+) -> ReturnType {
+    ro.with_sym(user)
+
+}
+}
+
 
 struct LogFormatter {
     re: Regex,
@@ -91,7 +135,7 @@ struct LogFormatter {
     log_id: bool,
     decode: Option<PathBuf>,
     #[cfg(target_os = "linux")]
-    objs: HashMap<String, RentObject>,
+    objs: HashMap<String, rent::RentObject>,
     #[cfg(target_os = "linux")]
     ctxs: HashMap<String, addr2line::Context<gimli::EndianRcSlice<gimli::RunTimeEndian>>>,
 }
@@ -362,7 +406,7 @@ impl LogFormatter {
                     format!("Failed to mmap file '{}' for dwarf and symbols", path)
                 })?
             };
-            let r1 = RentObject::new(
+            let r1 = rent::call_new(
                 Rc::new(m1),
                 |m3| {
                     let s : &[u8] = m3.as_ref();
@@ -399,7 +443,7 @@ impl LogFormatter {
         if !ret {
             let o = self.objs.get(path).unwrap();
 
-            let b2 = o.with_obj(|x| addr2line::Context::new(x.as_ref()))?;
+            let b2 = rent::call_with_obj(o, |x| addr2line::Context::new(x.as_ref()))?;
 
             self.ctxs.insert(path.to_string(), b2);
         }
@@ -412,7 +456,7 @@ impl LogFormatter {
     fn get_symbol_name(&self, path: &str, address: u64) -> String {
         let o = self.objs.get(path).unwrap();
 
-        o.with_sym(|x| match x.get(address) {
+        rent::call_with_sym(o,|x| match x.get(address) {
             Some(sym) => sym.name().to_owned(),
             None => format!("{}+<{:#x}>", path, address),
         })
