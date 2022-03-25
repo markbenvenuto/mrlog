@@ -35,7 +35,6 @@ use nix::sys::signal::{self, Signal};
 #[cfg(not(target_os = "windows"))]
 use nix::unistd::Pid;
 
-use std::{borrow::Cow, fs};
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::fs::File;
@@ -49,6 +48,7 @@ use std::string::String;
 use std::string::ToString;
 use std::thread;
 use std::vec::Vec;
+use std::{borrow::Cow, fs};
 //use std::rc::Box;
 
 use anyhow::{Context, Result};
@@ -71,66 +71,59 @@ use shared_stream::SharedStreamFactory;
 // TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
 #[cfg(target_os = "linux")]
 mod rent {
-use ouroboros::self_referencing;
-use std::rc::Rc;
+    use ouroboros::self_referencing;
+    use std::rc::Rc;
 
+    #[self_referencing]
+    pub struct RentObject {
+        lib: Rc<memmap2::Mmap>,
 
-#[self_referencing]
-pub struct RentObject{
-    lib: Rc<memmap2::Mmap>,
+        #[borrows(lib)]
+        #[covariant]
+        obj: Rc<object::File<'this>>,
 
-    #[borrows(lib)]
-    #[covariant]
-    obj: Rc<object::File<'this>>,
+        #[borrows(obj)]
+        #[covariant]
+        sym: Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
+    }
 
-    #[borrows(obj)]
-    #[covariant]
-    sym: Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
+    // Since the new and other functions are not public, we have to overcome E0624 with this hack
+    pub fn call_new(
+        lib: Rc<memmap2::Mmap>,
+        obj_builder: impl for<'this> ::core::ops::FnOnce(
+            &'this Rc<memmap2::Mmap>,
+        ) -> Rc<object::File<'this>>,
+        sym_builder: impl for<'this> ::core::ops::FnOnce(
+            &'this Rc<object::File<'this>>,
+        ) -> Rc<
+            object::SymbolMap<object::SymbolMapName<'this>>,
+        >,
+    ) -> RentObject {
+        RentObject::new(lib, obj_builder, sym_builder)
+    }
+
+    pub fn call_with_obj<'outer_borrow, ReturnType>(
+        ro: &'outer_borrow RentObject,
+        user: impl for<'this> ::core::ops::FnOnce(&'outer_borrow Rc<object::File<'this>>) -> ReturnType,
+    ) -> ReturnType {
+        ro.with_obj(user)
+    }
+
+    pub fn call_with_sym<'outer_borrow, ReturnType>(
+        ro: &'outer_borrow RentObject,
+
+        user: impl for<'this> ::core::ops::FnOnce(
+            &'outer_borrow Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
+        ) -> ReturnType,
+    ) -> ReturnType {
+        ro.with_sym(user)
+    }
 }
-
-// Since the new and other functions are not public, we have to overcome E0624 with this hack
-pub fn call_new(
-    lib: Rc<memmap2::Mmap>,
-    obj_builder: impl for<'this> ::core::ops::FnOnce(
-        &'this Rc<memmap2::Mmap>,
-    )
-        -> Rc<object::File<'this>>,
-    sym_builder: impl for<'this> ::core::ops::FnOnce(
-        &'this Rc<object::File<'this>>,
-    ) -> Rc<
-        object::SymbolMap<object::SymbolMapName<'this>>,
-    >,
-
-
-) -> RentObject {
-    RentObject::new(lib, obj_builder, sym_builder )
-}
-
-pub fn call_with_obj<'outer_borrow, ReturnType>(
-    ro: &'outer_borrow RentObject,
-    user: impl for<'this> ::core::ops::FnOnce(
-        &'outer_borrow Rc<object::File<'this>>,
-    ) -> ReturnType,
-) -> ReturnType {
-    ro.with_obj(user)
-}
-
-pub fn call_with_sym<'outer_borrow, ReturnType>(
-    ro: &'outer_borrow RentObject,
-
-    user: impl for<'this> ::core::ops::FnOnce(
-        &'outer_borrow Rc<object::SymbolMap<object::SymbolMapName<'this>>>,
-    ) -> ReturnType,
-) -> ReturnType {
-    ro.with_sym(user)
-
-}
-}
-
 
 struct LogFormatter {
     re: Regex,
-    re_color: Regex,
+    re_red_color: Regex,
+    re_yellow_color: Regex,
     use_color: bool,
     log_id: bool,
     decode: Option<PathBuf>,
@@ -142,7 +135,11 @@ struct LogFormatter {
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
 
-static LOG_ERROR_REGEX: &'static str = r#"invariant|fassert|failed to load|uncaught exception|FAIL"#;
+static LOG_ERROR_REGEX: &'static str =
+    r#"invariant|fassert|failed to load|uncaught exception|FAIL"#;
+
+// Unit tests
+static LOG_WARNING_REGEX: &'static str = r#"Expected"#;
 
 static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
 
@@ -212,7 +209,8 @@ impl LogFormatter {
     fn new(use_color: bool, log_id: bool, decode: Option<PathBuf>) -> LogFormatter {
         LogFormatter {
             re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
             use_color,
             log_id,
             decode,
@@ -227,7 +225,8 @@ impl LogFormatter {
     fn new_for_test() -> LogFormatter {
         LogFormatter {
             re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
+            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
             use_color: false,
             log_id: false,
             decode: None,
@@ -274,8 +273,12 @@ impl LogFormatter {
             return Cow::from(s);
         }
 
-        if self.re_color.is_match(s) {
+        if self.re_red_color.is_match(s) {
             return Cow::Owned(s.red().to_string());
+        }
+
+        if self.re_yellow_color.is_match(s) {
+            return Cow::Owned(s.yellow().to_string());
         }
 
         Cow::from(s)
@@ -409,12 +412,12 @@ impl LogFormatter {
             let r1 = rent::call_new(
                 Rc::new(m1),
                 |m3| {
-                    let s : &[u8] = m3.as_ref();
+                    let s: &[u8] = m3.as_ref();
                     Rc::new(
                         object::File::parse(s).expect(&format!("Failed to parse file '{}'", path)),
                     )
                 },
-                |a1,| Rc::new(a1.symbol_map()),
+                |a1| Rc::new(a1.symbol_map()),
             );
 
             self.objs.insert(path.to_string(), r1);
@@ -456,7 +459,7 @@ impl LogFormatter {
     fn get_symbol_name(&self, path: &str, address: u64) -> String {
         let o = self.objs.get(path).unwrap();
 
-        rent::call_with_sym(o,|x| match x.get(address) {
+        rent::call_with_sym(o, |x| match x.get(address) {
             Some(sym) => sym.name().to_owned(),
             None => format!("{}+<{:#x}>", path, address),
         })
@@ -595,6 +598,20 @@ impl LogFormatter {
         Ok(String::new())
     }
 
+    fn filter_test_extra(&mut self, s: &str) -> String {
+        let mut string_buffer = String::with_capacity(s.len());
+        let lines = s.lines();
+        for line in lines {
+            if line.starts_with("unw_get_proc_name") && line.ends_with("no unwind info found") {
+                continue;
+            }
+            string_buffer.push_str(line);
+            string_buffer.push('\n');
+        }
+
+        string_buffer
+    }
+
     fn log_to_str(&mut self, s: &str) -> Result<String> {
         let parsed =
             json::parse(s).with_context(|| format!("Failed to parse JSON log line: {}", s))?;
@@ -713,6 +730,53 @@ impl LogFormatter {
                     }
                 }
 
+                // A message for a unit test failure
+                if log_id == 4680100 {
+                    let mut ret = String::new();
+
+                    let test_name = get_json_str(&attr, "test", s)?;
+                    let test_exception = get_json_str(&attr, "type", s)?;
+                    let test_error = get_json_str(&attr, "error", s)?;
+
+                    // This is a string dump of an json document of a stack trace
+                    // TODO - recursively format this as a backtrace
+                    let test_extra = get_json_str(&attr, "extra", s)?;
+                    std::fmt::Write::write_str(
+                        &mut ret,
+                        &LogFormatter::format_line_basic(
+                            d,
+                            log_level,
+                            component,
+                            context,
+                            self.maybe_color_text(&format!(
+                                "FAIL: '{}' with '{}' \n",
+                                test_name, test_exception
+                            )),
+                        ),
+                    )?;
+                    std::fmt::Write::write_str(
+                        &mut ret,
+                        &LogFormatter::format_line_basic(
+                            d,
+                            log_level,
+                            component,
+                            context,
+                            self.maybe_color_text(&format!("{}\n", test_error)),
+                        ),
+                    )?;
+                    std::fmt::Write::write_str(
+                        &mut ret,
+                        &LogFormatter::format_line_basic(
+                            d,
+                            log_level,
+                            component,
+                            context,
+                            Cow::Owned(self.filter_test_extra(test_extra)),
+                        ),
+                    )?;
+                    return Ok(ret);
+                }
+
                 let s = String::from(msg) + " " + attr.dump().as_ref();
                 return Ok(self.format_line(
                     d,
@@ -824,7 +888,6 @@ struct Cli {
     #[structopt(short, long, parse(from_os_str))]
     output: Option<PathBuf>,
 
-
     /// If a output file alread exists, rename with .bak suffix
     #[structopt(long)]
     backup: bool,
@@ -839,33 +902,28 @@ struct Cli {
 }
 
 struct TeeWriter<'a> {
-    writers: Vec<Box<dyn io::Write + 'a>> ,
+    writers: Vec<Box<dyn io::Write + 'a>>,
 }
 
 impl<'a> TeeWriter<'a> {
-    fn new(writers: Vec<Box<dyn io::Write + 'a>> ) -> TeeWriter<'a> {
-        TeeWriter
-        {
-            writers: writers,
-        }
+    fn new(writers: Vec<Box<dyn io::Write + 'a>>) -> TeeWriter<'a> {
+        TeeWriter { writers: writers }
     }
 }
 
-impl <'a> io::Write for TeeWriter<'a> {
+impl<'a> io::Write for TeeWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut size : usize = 0;
+        let mut size: usize = 0;
         for writer in self.writers.iter_mut() {
             let r = writer.write(buf);
-            if let Ok(s)  = r{
-                if s != 0 && size != 0 && size != s{
+            if let Ok(s) = r {
+                if s != 0 && size != 0 && size != s {
                     panic!("Failed to write same size to writers - {} - {}", s, size);
                 }
                 size = s;
-
             } else {
                 return r;
             }
-
         }
         Ok(size)
     }
@@ -873,7 +931,7 @@ impl <'a> io::Write for TeeWriter<'a> {
     fn flush(&mut self) -> io::Result<()> {
         for writer in self.writers.iter_mut() {
             let r = writer.flush();
-            if r.is_err(){
+            if r.is_err() {
                 return r;
             }
         }
@@ -881,33 +939,33 @@ impl <'a> io::Write for TeeWriter<'a> {
     }
 }
 
-
 fn get_writer<'a>(
     file_name_buf: Option<PathBuf>,
     stdout: &'a io::Stdout,
     tee: bool,
-    backup:bool,
+    backup: bool,
 ) -> Result<Box<dyn io::Write + 'a>> {
-    let writer: Box<dyn io::Write + 'a> = match file_name_buf.as_ref() {
-        Some(file_name) => {
-        if backup && file_name.as_path().exists() {
-            let new_file_str = format!("{}.bak", file_name.as_path().display());
-            let new_file = Path::new(&new_file_str);
-            fs::rename(file_name, new_file)?;
-        }
+    let writer: Box<dyn io::Write + 'a> =
+        match file_name_buf.as_ref() {
+            Some(file_name) => {
+                if backup && file_name.as_path().exists() {
+                    let new_file_str = format!("{}.bak", file_name.as_path().display());
+                    let new_file = Path::new(&new_file_str);
+                    fs::rename(file_name, new_file)?;
+                }
 
-        Box::new(File::create(file_name).with_context(|| {
-            format!("Failed to open file '{:#?}' for output", file_name)
-        })?)
-    },
+                Box::new(File::create(file_name).with_context(|| {
+                    format!("Failed to open file '{:#?}' for output", file_name)
+                })?)
+            }
 
-        None => {
-            // TODO - throw error if tee == true
+            None => {
+                // TODO - throw error if tee == true
 
-            let out_lock = stdout.lock();
-            Box::new(out_lock)
-        }
-    };
+                let out_lock = stdout.lock();
+                Box::new(out_lock)
+            }
+        };
 
     // TODO - strip out ANSI codes when writing to a file.
     // see https://en.wikipedia.org/wiki/ANSI_escape_code
@@ -920,7 +978,6 @@ fn get_writer<'a>(
         writers.push(Box::new(out_lock));
 
         Ok(Box::new(TeeWriter::new(writers)))
-
     } else {
         Ok(writer)
     }

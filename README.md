@@ -68,3 +68,8 @@ Get Rust from https://rustup.rs/.
 ## License
 
 Apache 2.0
+
+
+TODO
+- make MongoDB json format specify the name of the main binary
+- add support for unittest asserts
