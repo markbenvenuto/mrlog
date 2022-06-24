@@ -9,6 +9,8 @@ edition = "2018"
 [dependencies]
 json = "0.12.4"
 regex = "1.5.4"
+lazy-regex = "2.3.0"
+
 structopt = "0.3.20"
 
 anyhow = "1.0.53"

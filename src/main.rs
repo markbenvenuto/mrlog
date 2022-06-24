@@ -62,6 +62,7 @@ use colored::{ColoredString, Colorize};
 use colored::control::{SHOULD_COLORIZE};
 
 use regex::*;
+use lazy_regex::{lazy_regex, Lazy};
 
 use structopt::StructOpt;
 
@@ -122,11 +123,6 @@ mod rent {
 }
 
 struct LogFormatter {
-    re: Regex,
-    re_red_color: Regex,
-    re_yellow_color: Regex,
-    re_port_color: Regex,
-    re_state_color: Regex,
     use_color: bool,
     log_id: bool,
     decode: Option<PathBuf>,
@@ -138,17 +134,17 @@ struct LogFormatter {
 
 static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
 
-static LOG_ERROR_REGEX: &'static str =
-    r#"invariant|fassert|failed to load|uncaught exception|FAIL"#;
+static LOG_ERROR_REGEX:  Lazy<Regex> = lazy_regex!(
+    r#"invariant|fassert|failed to load|uncaught exception|FAIL"#);
 
 // Unit tests
-static LOG_WARNING_REGEX: &'static str = r#"Expected"#;
+static LOG_WARNING_REGEX: Lazy<Regex> = lazy_regex!(r#"Expected"#);
 
-static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
+static LOG_ATTR_REGEX: Lazy<Regex> = lazy_regex!(r#"\{([\w]+)\}"#);
 
-static LOG_PORT_REGEX: &'static str = r#" [sdbc](\d{1,5})\|"#;
+static LOG_PORT_REGEX: Lazy<Regex> = lazy_regex!(r#" [sdbc](\d{1,5})\|"#);
 
-static LOG_STATE_REGEX: &'static str = r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#;
+static LOG_STATE_REGEX: Lazy<Regex> = lazy_regex!(r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#);
 // r#"(:s(hard)?\d*|:c(onfigsvr)?)?:(initsync|prim(ary)?|(mongo)?s|sec(ondary)?\d*|n(ode)?\d*)]"#;
 
 // from duration.h
@@ -233,11 +229,6 @@ fn parse_somap(o: &json::JsonValue) -> Result<HashMap<String, ObjectEntry>> {
 impl LogFormatter {
     fn new(use_color: bool, log_id: bool, decode: Option<PathBuf>) -> LogFormatter {
         LogFormatter {
-            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
-            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
-            re_port_color: Regex::new(LOG_PORT_REGEX).unwrap(),
-            re_state_color: Regex::new(LOG_STATE_REGEX).unwrap(),
             use_color,
             log_id,
             decode,
@@ -251,11 +242,6 @@ impl LogFormatter {
     #[cfg(test)]
     fn new_for_test() -> LogFormatter {
         LogFormatter {
-            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
-            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
-            re_port_color: Regex::new(LOG_PORT_REGEX).unwrap(),
-            re_state_color: Regex::new(LOG_STATE_REGEX).unwrap(),
             use_color: false,
             log_id: false,
             decode: None,
@@ -310,11 +296,11 @@ impl LogFormatter {
             return Cow::from(s);
         }
 
-        if self.re_red_color.is_match(s) {
+        if LOG_ERROR_REGEX.is_match(s) {
             return Cow::Owned(s.truecolor(206, 30, 92).to_string());
         }
 
-        if self.re_yellow_color.is_match(s) {
+        if LOG_WARNING_REGEX.is_match(s) {
             return Cow::Owned(s.truecolor(223, 135, 46).to_string());
         }
 
@@ -748,7 +734,7 @@ impl LogFormatter {
                 }
             }
 
-            let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
+            let msg_fmt = LOG_ATTR_REGEX.replace_all(msg, |caps: &Captures| {
                 // println!("{}", &caps[1]);
                 let v = &attr[&caps[1]];
                 if v.is_object() || v.is_number() || v.is_boolean() {
