@@ -59,6 +59,7 @@ use cpp_demangle::Symbol;
 use object::Object;
 
 use colored::{ColoredString, Colorize};
+use colored::control::{SHOULD_COLORIZE};
 
 use regex::*;
 
@@ -1190,6 +1191,10 @@ fn run_command(
 
 fn main() -> Result<()> {
     let args = Cli::from_args();
+
+    if args.color {
+        SHOULD_COLORIZE.set_override(true);
+    }
 
     let stdout_handle = io::stdout();
     let mut writer = get_writer(args.output, &stdout_handle, args.tee, args.backup)?;
