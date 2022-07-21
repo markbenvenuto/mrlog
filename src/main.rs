@@ -946,15 +946,11 @@ impl<'a> io::Write for TeeWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut size: usize = 0;
         for writer in self.writers.iter_mut() {
-            let r = writer.write(buf);
-            if let Ok(s) = r {
-                if s != 0 && size != 0 && size != s {
-                    panic!("Failed to write same size to writers - {} - {}", s, size);
-                }
-                size = s;
-            } else {
-                return r;
+            let s = writer.write(buf)?;
+            if s != 0 && size != 0 && size != s {
+                panic!("Failed to write same size to writers - {} - {}", s, size);
             }
+            size = s;
         }
         Ok(size)
     }
@@ -1004,8 +1000,7 @@ fn get_writer<'a>(
     // see https://en.wikipedia.org/wiki/ANSI_escape_code
     // We need to look for "\x1B[" some text and then 'm'
     if tee {
-        let mut writers = Vec::<Box<dyn io::Write + 'a>>::new();
-        writers.push(writer);
+        let mut writers = vec![writer];
 
         let out_lock = stdout.lock();
         writers.push(Box::new(out_lock));
