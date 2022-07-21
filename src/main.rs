@@ -128,7 +128,7 @@ struct LogFormatter {
     ctxs: HashMap<String, addr2line::Context<gimli::EndianRcSlice<gimli::RunTimeEndian>>>,
 }
 
-static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
+static LOG_FORMAT_PREFIX: &str = r#"{"t":{"$date"#;
 
 static LOG_ERROR_REGEX: Lazy<Regex> =
     lazy_regex!(r#"invariant|fassert|failed to load|uncaught exception|FAIL"#);
@@ -138,13 +138,13 @@ static LOG_WARNING_REGEX: Lazy<Regex> = lazy_regex!(r#"Expected"#);
 
 static LOG_ATTR_REGEX: Lazy<Regex> = lazy_regex!(r#"\{([\w]+)\}"#);
 
-static LOG_PORT_REGEX: Lazy<Regex> = lazy_regex!(r#" [sdbc](\d{1,5})\|"#);
+//static LOG_PORT_REGEX: Lazy<Regex> = lazy_regex!(r#" [sdbc](\d{1,5})\|"#);
 
-static LOG_STATE_REGEX: Lazy<Regex> = lazy_regex!(r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#);
+//static LOG_STATE_REGEX: Lazy<Regex> = lazy_regex!(r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#);
 // r#"(:s(hard)?\d*|:c(onfigsvr)?)?:(initsync|prim(ary)?|(mongo)?s|sec(ondary)?\d*|n(ode)?\d*)]"#;
 
 // from duration.h
-const LOG_TIME_SUFFIXES_TUPLE: &'static [(&'static str, &'static str)] = &[
+const LOG_TIME_SUFFIXES_TUPLE: &[(&str, &str)] = &[
     ("Nanos", "ns"),
     ("Micros", "μs"), // GREEK SMALL LETTER MU, 0x03BC or 956 code point
     ("Millis", "ms"),
@@ -154,10 +154,11 @@ const LOG_TIME_SUFFIXES_TUPLE: &'static [(&'static str, &'static str)] = &[
     ("Days", "d"),
 ];
 
-const COLOR_LIST: &'static [i32] = &[
-    0x5aae61, 0x9970ab, 0xbf812d, 0x2166ac, 0x8c510a, 0x1b7837, 0x74add1, 0xd6604d, 0x762a83,
-    0x35978f, 0xde77ae,
-];
+// Color list from lobster
+//const COLOR_LIST: &'static [i32] = &[
+//    0x5aae61, 0x9970ab, 0xbf812d, 0x2166ac, 0x8c510a, 0x1b7837, 0x74add1, 0xd6604d, 0x762a83,
+//    0x35978f, 0xde77ae,
+//];
 
 fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
     let r = v[name]
@@ -864,31 +865,29 @@ where
 {
     let lf_byte = vec![10];
 
-    for line in lines {
-        if let Ok(line_opt) = line {
-            let convert_result = lf.fuzzy_log_color_str(line_opt.as_str());
-            match convert_result {
-                Ok(s) => {
-                    let r = writer.write_all(s.as_bytes());
-                    if r.is_err() {
-                        eprintln!("Error: {:?}", r);
-                        return;
-                    }
-                }
-                Err(m) => {
-                    // TODO - format error message better
-                    let r = writer.write_all(m.to_string().as_bytes());
-                    if r.is_err() {
-                        eprintln!("Error: {:?}", r);
-                        return;
-                    }
+    for line in lines.flatten() {
+        let convert_result = lf.fuzzy_log_color_str(line.as_str());
+        match convert_result {
+            Ok(s) => {
+                let r = writer.write_all(s.as_bytes());
+                if r.is_err() {
+                    eprintln!("Error: {:?}", r);
+                    return;
                 }
             }
-            let r = writer.write_all(lf_byte.as_ref());
-            if r.is_err() {
-                eprintln!("Error: {:?}", r);
-                return;
+            Err(m) => {
+                // TODO - format error message better
+                let r = writer.write_all(m.to_string().as_bytes());
+                if r.is_err() {
+                    eprintln!("Error: {:?}", r);
+                    return;
+                }
             }
+        }
+        let r = writer.write_all(lf_byte.as_ref());
+        if r.is_err() {
+            eprintln!("Error: {:?}", r);
+            return;
         }
     }
 }
@@ -939,7 +938,7 @@ struct TeeWriter<'a> {
 
 impl<'a> TeeWriter<'a> {
     fn new(writers: Vec<Box<dyn io::Write + 'a>>) -> TeeWriter<'a> {
-        TeeWriter { writers: writers }
+        TeeWriter { writers }
     }
 }
 
@@ -963,6 +962,8 @@ impl<'a> io::Write for TeeWriter<'a> {
     fn flush(&mut self) -> io::Result<()> {
         for writer in self.writers.iter_mut() {
             let r = writer.flush();
+
+            #[allow(clippy::question_mark)]
             if r.is_err() {
                 return r;
             }
