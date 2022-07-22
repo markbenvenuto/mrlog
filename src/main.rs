@@ -24,9 +24,6 @@ extern crate memmap2;
 extern crate object;
 extern crate regex;
 
-// #[cfg(target_os = "linux")]
-//use ouroboros::self_referencing;
-
 // TODO - make mac and linux specific
 #[cfg(not(target_os = "windows"))]
 extern crate nix;
@@ -49,7 +46,6 @@ use std::string::ToString;
 use std::thread;
 use std::vec::Vec;
 use std::{borrow::Cow, fs};
-//use std::rc::Box;
 
 use anyhow::{Context, Result};
 
@@ -58,8 +54,10 @@ use cpp_demangle::Symbol;
 #[cfg(target_os = "linux")]
 use object::Object;
 
-use colored::Colorize;
+use colored::control::SHOULD_COLORIZE;
+use colored::{ColoredString, Colorize};
 
+use lazy_regex::{lazy_regex, Lazy};
 use regex::*;
 
 use structopt::StructOpt;
@@ -121,9 +119,6 @@ mod rent {
 }
 
 struct LogFormatter {
-    re: Regex,
-    re_red_color: Regex,
-    re_yellow_color: Regex,
     use_color: bool,
     log_id: bool,
     decode: Option<PathBuf>,
@@ -133,18 +128,23 @@ struct LogFormatter {
     ctxs: HashMap<String, addr2line::Context<gimli::EndianRcSlice<gimli::RunTimeEndian>>>,
 }
 
-static LOG_FORMAT_PREFIX: &'static str = r#"{"t":{"$date"#;
+static LOG_FORMAT_PREFIX: &str = r#"{"t":{"$date"#;
 
-static LOG_ERROR_REGEX: &'static str =
-    r#"invariant|fassert|failed to load|uncaught exception|FAIL"#;
+static LOG_ERROR_REGEX: Lazy<Regex> =
+    lazy_regex!(r#"invariant|fassert|failed to load|uncaught exception|FAIL"#);
 
 // Unit tests
-static LOG_WARNING_REGEX: &'static str = r#"Expected"#;
+static LOG_WARNING_REGEX: Lazy<Regex> = lazy_regex!(r#"Expected"#);
 
-static LOG_ATTR_REGEX: &'static str = r#"\{([\w]+)\}"#;
+static LOG_ATTR_REGEX: Lazy<Regex> = lazy_regex!(r#"\{([\w]+)\}"#);
+
+//static LOG_PORT_REGEX: Lazy<Regex> = lazy_regex!(r#" [sdbc](\d{1,5})\|"#);
+
+//static LOG_STATE_REGEX: Lazy<Regex> = lazy_regex!(r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#);
+// r#"(:s(hard)?\d*|:c(onfigsvr)?)?:(initsync|prim(ary)?|(mongo)?s|sec(ondary)?\d*|n(ode)?\d*)]"#;
 
 // from duration.h
-const LOG_TIME_SUFFIXES_TUPLE: &'static [(&'static str, &'static str)] = &[
+const LOG_TIME_SUFFIXES_TUPLE: &[(&str, &str)] = &[
     ("Nanos", "ns"),
     ("Micros", "μs"), // GREEK SMALL LETTER MU, 0x03BC or 956 code point
     ("Millis", "ms"),
@@ -154,11 +154,29 @@ const LOG_TIME_SUFFIXES_TUPLE: &'static [(&'static str, &'static str)] = &[
     ("Days", "d"),
 ];
 
+// Color list from lobster
+//const COLOR_LIST: &'static [i32] = &[
+//    0x5aae61, 0x9970ab, 0xbf812d, 0x2166ac, 0x8c510a, 0x1b7837, 0x74add1, 0xd6604d, 0x762a83,
+//    0x35978f, 0xde77ae,
+//];
+
 fn get_json_str<'a>(v: &'a json::JsonValue, name: &str, line: &str) -> Result<&'a str> {
     let r = v[name]
         .as_str()
         .with_context(|| format!("Failed to find '{}' in JSON log line: {}", name, line))?;
     Ok(r)
+}
+
+fn color_test_suite(s: &str) -> ColoredString {
+    s.truecolor(108, 68, 171).bold()
+}
+
+fn color_test_name(s: &str) -> ColoredString {
+    s.truecolor(47, 138, 173)
+}
+
+fn color_function_address(s: &str) -> ColoredString {
+    s.blue()
 }
 
 #[cfg(target_os = "linux")]
@@ -208,9 +226,6 @@ fn parse_somap(o: &json::JsonValue) -> Result<HashMap<String, ObjectEntry>> {
 impl LogFormatter {
     fn new(use_color: bool, log_id: bool, decode: Option<PathBuf>) -> LogFormatter {
         LogFormatter {
-            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
-            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
             use_color,
             log_id,
             decode,
@@ -224,9 +239,6 @@ impl LogFormatter {
     #[cfg(test)]
     fn new_for_test() -> LogFormatter {
         LogFormatter {
-            re: Regex::new(LOG_ATTR_REGEX).unwrap(),
-            re_red_color: Regex::new(LOG_ERROR_REGEX).unwrap(),
-            re_yellow_color: Regex::new(LOG_WARNING_REGEX).unwrap(),
             use_color: false,
             log_id: false,
             decode: None,
@@ -237,14 +249,14 @@ impl LogFormatter {
         }
     }
 
-    fn format_line<'a>(
+    fn format_line(
         &self,
         date: &str,
         log_level: &str,
         component: &str,
         context: &str,
         id: u64,
-        msg: Cow<'a, str>,
+        msg: &str,
     ) -> String {
         if self.log_id {
             return format!(
@@ -255,12 +267,12 @@ impl LogFormatter {
         LogFormatter::format_line_basic(date, log_level, component, context, msg)
     }
 
-    fn format_line_basic<'a>(
+    fn format_line_basic(
         date: &str,
         log_level: &str,
         component: &str,
         context: &str,
-        msg: Cow<'a, str>,
+        msg: &str,
     ) -> String {
         format!(
             "{} {:<2} {:<8} [{}] {}",
@@ -268,32 +280,39 @@ impl LogFormatter {
         )
     }
 
+    fn maybe_color(&self, s: ColoredString) -> String {
+        if !self.use_color {
+            return s.clear().to_string();
+        }
+
+        s.to_string()
+    }
+
     fn maybe_color_text<'a>(&self, s: &'a str) -> Cow<'a, str> {
         if !self.use_color {
             return Cow::from(s);
         }
 
-        if self.re_red_color.is_match(s) {
-            return Cow::Owned(s.red().to_string());
+        if LOG_ERROR_REGEX.is_match(s) {
+            return Cow::Owned(s.truecolor(206, 30, 92).to_string());
         }
 
-        if self.re_yellow_color.is_match(s) {
-            return Cow::Owned(s.yellow().to_string());
+        if LOG_WARNING_REGEX.is_match(s) {
+            return Cow::Owned(s.truecolor(223, 135, 46).to_string());
         }
 
         Cow::from(s)
     }
 
-    fn demangle_frame(
+    fn demangle_frame<F>(
         &self,
         frame: &json::JsonValue,
         s: &str,
-        date: &str,
-        log_level: &str,
-        component: &str,
-        context: &str,
-        id: u64,
-    ) -> Result<Option<String>> {
+        line_formatter: F,
+    ) -> Result<Option<String>>
+    where
+        F: Fn(&str) -> String,
+    {
         // Windows: "msg":"  Frame: {frame}","attr":{"frame":{"a":"7FFCD7CAC3E1","module":"ucrtbased.dll","s":"raise","s+":"441"}}}
         //          "msg":"  Frame: {frame}","attr":{"frame":{"a":"7FF7FD471750","module":"util_test.exe","file":".../src/mongo/util/alarm_test.cpp","line":48,"s":"mongo::`anonymous namespace'::doThrow","s+":"30"}}}
         // Linux:   "msg":"  Frame: {frame}","attr":{"frame":{"a":"7F4266DD4CD5","b":"7F4266DA1000","o":"33CD5","s":"abort","s+":"175"}}}
@@ -310,34 +329,29 @@ impl LogFormatter {
                     .as_u64()
                     .with_context(|| format!("Failed to find 'line' in JSON log line: {}", s))?;
                 // Format as Windows with file and line
-                return Ok(Some(self.format_line(
-                    date,
-                    log_level,
-                    component,
-                    context,
-                    id,
-                    self.maybe_color_text(&format!(
-                        "  Frame: 0x{} {}!{}+0x{} [{} @ {}]",
-                        symbol_address,
-                        symbol_module,
-                        symbol_name,
+                return Ok(Some(line_formatter(
+                    format!(
+                        "  Frame: {} {}!{}+0x{} [{} @ {}]",
+                        self.maybe_color(color_function_address(&format!("0x{}", symbol_address))),
+                        symbol_module, // TODO - color this
+                        self.maybe_color(symbol_name.yellow()),
                         symbol_offset,
                         symbol_file,
                         symbol_line
-                    )),
+                    )
+                    .as_ref(),
                 )));
             } else {
                 // Format as Windows
-                return Ok(Some(self.format_line(
-                    date,
-                    log_level,
-                    component,
-                    context,
-                    id,
-                    self.maybe_color_text(&format!(
-                        "  Frame: 0x{} {}!{}+0x{}",
-                        symbol_address, symbol_module, symbol_name, symbol_offset
-                    )),
+                return Ok(Some(line_formatter(
+                    format!(
+                        "  Frame: {} {}!{}+0x{}",
+                        self.maybe_color(color_function_address(&format!("0x{}", symbol_address))),
+                        symbol_module, // TODO - color this
+                        self.maybe_color(symbol_name.yellow()),
+                        symbol_offset
+                    )
+                    .as_ref(),
                 )));
             }
         }
@@ -365,29 +379,24 @@ impl LogFormatter {
                     }
                 }
 
-                return Ok(Some(self.format_line(
-                    date,
-                    log_level,
-                    component,
-                    context,
-                    id,
-                    self.maybe_color_text(&format!(
-                        "  Frame: 0x{} {}+0x{}",
-                        symbol_address, sym_name, symbol_offset
-                    )),
+                return Ok(Some(line_formatter(
+                    format!(
+                        "  Frame: {} {}+0x{}",
+                        self.maybe_color(color_function_address(&format!("0x{}", symbol_address))),
+                        self.maybe_color(sym_name.yellow()),
+                        symbol_offset
+                    )
+                    .as_ref(),
                 )));
             } else {
                 // No symbol name
-                return Ok(Some(self.format_line(
-                    date,
-                    log_level,
-                    component,
-                    context,
-                    id,
-                    self.maybe_color_text(&format!(
-                        "  Frame: 0x{} +0x{}",
-                        symbol_address, binary_offset
-                    )),
+                return Ok(Some(line_formatter(
+                    format!(
+                        "  Frame: {} +0x{}",
+                        self.maybe_color(color_function_address(&format!("0x{}", symbol_address))),
+                        binary_offset
+                    )
+                    .as_ref(),
                 )));
             }
         }
@@ -414,7 +423,8 @@ impl LogFormatter {
                 |m3| {
                     let s: &[u8] = m3.as_ref();
                     Rc::new(
-                        object::File::parse(s).expect(&format!("Failed to parse file '{}'", path)),
+                        object::File::parse(s)
+                            .unwrap_or_else(|_| panic!("Failed to parse file '{}'", path)),
                     )
                 },
                 |a1| Rc::new(a1.symbol_map()),
@@ -452,7 +462,7 @@ impl LogFormatter {
         }
 
         let ret2 = self.ctxs.get(path);
-        Ok(&ret2.unwrap())
+        Ok(ret2.unwrap())
     }
 
     #[cfg(target_os = "linux")]
@@ -466,19 +476,13 @@ impl LogFormatter {
     }
 
     #[cfg(target_os = "linux")]
-    fn demangle_backtrace(
-        &mut self,
-        bt: &json::JsonValue,
-        _s: &str,
-        date: &str,
-        log_level: &str,
-        component: &str,
-        context: &str,
-        _id: u64,
-    ) -> Result<String> {
+    fn demangle_backtrace<F>(&mut self, bt: &json::JsonValue, line_formatter: F) -> Result<String>
+    where
+        F: Fn(&str) -> String,
+    {
         let somap_json = &bt["processInfo"]["somap"];
 
-        let somap = parse_somap(&somap_json)?;
+        let somap = parse_somap(somap_json)?;
         let mut ret = String::new();
 
         // Each entry has the following shape:
@@ -510,51 +514,39 @@ impl LogFormatter {
                         Some(loc) => {
                             std::fmt::Write::write_str(
                                 &mut ret,
-                                &LogFormatter::format_line_basic(
-                                    date,
-                                    log_level,
-                                    component,
-                                    context,
-                                    Cow::Owned(format!(
-                                        "{} at {}:{}\n",
-                                        frame.function.map_or_else(
-                                            || format!("<unknown>+{}", offset_orig),
-                                            |f| f
-                                                .demangle()
-                                                .unwrap_or_else(|_| Cow::Owned(format!(
-                                                    "demangle failed+{}",
-                                                    offset_orig
-                                                )))
-                                                .to_string()
-                                        ),
-                                        loc.file.unwrap_or("<unknown>"),
-                                        loc.line.unwrap_or(0)
-                                    )),
-                                ),
+                                &line_formatter(&format!(
+                                    "{} at {}:{}\n",
+                                    frame.function.map_or_else(
+                                        || format!("<unknown>+{}", offset_orig),
+                                        |f| f
+                                            .demangle()
+                                            .unwrap_or_else(|_| Cow::Owned(format!(
+                                                "demangle failed+{}",
+                                                offset_orig
+                                            )))
+                                            .to_string()
+                                    ),
+                                    loc.file.unwrap_or("<unknown>"),
+                                    loc.line.unwrap_or(0)
+                                )),
                             )?;
                         }
                         None => {
                             std::fmt::Write::write_str(
                                 &mut ret,
-                                &LogFormatter::format_line_basic(
-                                    date,
-                                    log_level,
-                                    component,
-                                    context,
-                                    Cow::Owned(format!(
-                                        "{}\n",
-                                        frame.function.map_or_else(
-                                            || format!("<unknown>+{}", offset_orig),
-                                            |f| f
-                                                .demangle()
-                                                .unwrap_or_else(|_| Cow::Owned(format!(
-                                                    "demangle failed+{}",
-                                                    offset_orig
-                                                )))
-                                                .to_string()
-                                        ),
-                                    )),
-                                ),
+                                &line_formatter(&format!(
+                                    "{}\n",
+                                    frame.function.map_or_else(
+                                        || format!("<unknown>+{}", offset_orig),
+                                        |f| f
+                                            .demangle()
+                                            .unwrap_or_else(|_| Cow::Owned(format!(
+                                                "demangle failed+{}",
+                                                offset_orig
+                                            )))
+                                            .to_string()
+                                    )
+                                )),
                             )?;
                         }
                     }
@@ -568,16 +560,7 @@ impl LogFormatter {
                         .unwrap_or(&self.decode.as_ref().unwrap().to_str().unwrap().to_owned()),
                     offset,
                 );
-                std::fmt::Write::write_str(
-                    &mut ret,
-                    &LogFormatter::format_line_basic(
-                        date,
-                        log_level,
-                        component,
-                        context,
-                        Cow::Owned(format!("{}\n", a)),
-                    ),
-                )?;
+                std::fmt::Write::write_str(&mut ret, &line_formatter(&format!("{}\n", a)))?;
             }
         }
 
@@ -585,31 +568,90 @@ impl LogFormatter {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn demangle_backtrace(
-        &mut self,
-        _bt: &json::JsonValue,
-        _s: &str,
-        _date: &str,
-        _log_level: &str,
-        _component: &str,
-        _context: &str,
-        _id: u64,
-    ) -> Result<String> {
+    fn demangle_backtrace<F>(&mut self, _bt: &json::JsonValue, _line_formatter: F) -> Result<String>
+    where
+        F: Fn(&str) -> String,
+    {
         Ok(String::new())
     }
 
-    fn filter_test_extra(&mut self, s: &str) -> String {
+    fn filter_test_extra(&mut self, s: &str) -> Result<String> {
         let mut string_buffer = String::with_capacity(s.len());
         let lines = s.lines();
         for line in lines {
             if line.starts_with("unw_get_proc_name") && line.ends_with("no unwind info found") {
                 continue;
             }
+
+            if let Some(fstr) = line.strip_prefix("  Frame:") {
+                let parsed = json::parse(fstr)
+                    .with_context(|| format!("Failed to parse JSON log line: {}", s))?;
+
+                let frame_str_opt = self.demangle_frame(&parsed, s, |x| x.to_string())?;
+
+                if let Some(frame_str) = frame_str_opt {
+                    string_buffer.push_str(&frame_str);
+                    string_buffer.push('\n');
+                    continue;
+                }
+            }
+
             string_buffer.push_str(line);
             string_buffer.push('\n');
         }
 
-        string_buffer
+        Ok(string_buffer)
+    }
+
+    fn unittest_exception_to_str<F>(
+        &mut self,
+        s: &str,
+        attr: &json::JsonValue,
+        line_formatter: F,
+    ) -> Result<String>
+    where
+        F: Fn(&str) -> String,
+    {
+        let mut ret = String::new();
+
+        let test_name = get_json_str(attr, "test", s)?;
+        let test_exception = get_json_str(attr, "type", s)?;
+        let test_error = get_json_str(attr, "error", s)?;
+
+        // This is a string dump of an json document of a stack trace
+        let test_extra = get_json_str(attr, "extra", s)?;
+        std::fmt::Write::write_str(
+            &mut ret,
+            &line_formatter(
+                self.maybe_color_text(&format!("UNIT TEST FAILURE: '{}'\n", test_name))
+                    .as_ref(),
+            ),
+        )?;
+
+        std::fmt::Write::write_str(
+            &mut ret,
+            &line_formatter(
+                self.maybe_color_text(&format!("Exception: '{}'\n", test_exception))
+                    .as_ref(),
+            ),
+        )?;
+
+        // Add a space after @ to be friendlier for vs code
+        let fixed_test_error = test_error.replace("@src", "@ src");
+
+        std::fmt::Write::write_str(
+            &mut ret,
+            &line_formatter(
+                self.maybe_color_text(&format!("Message: {}\n", fixed_test_error))
+                    .as_ref(),
+            ),
+        )?;
+        std::fmt::Write::write_str(
+            &mut ret,
+            &line_formatter(&(self.filter_test_extra(test_extra)?)),
+        )?;
+
+        Ok(ret)
     }
 
     fn log_to_str(&mut self, s: &str) -> Result<String> {
@@ -628,6 +670,11 @@ impl LogFormatter {
         let msg = get_json_str(&parsed, "msg", s)?;
         let attr = &parsed["attr"];
 
+        let line_formatter =
+            |x: &str| self.format_line(d, log_level, component, context, log_id, x);
+        let basic_line_formatter =
+            |x: &str| LogFormatter::format_line_basic(d, log_level, component, context, x);
+
         if msg.contains('{') {
             // Handle messages which are just an empty {}
             if msg == "{}" {
@@ -639,27 +686,20 @@ impl LogFormatter {
                     log_id,
                     self.maybe_color_text(attr["message"].as_str().with_context(|| {
                         format!("Failed to find 'message' in JSON log line: {}", s)
-                    })?),
+                    })?)
+                    .as_ref(),
                 ));
             }
 
             let is_frame = msg.starts_with("  Frame:") || msg.starts_with("Frame");
             if is_frame {
-                let frame_str_opt = self.demangle_frame(
-                    &attr["frame"],
-                    s,
-                    d,
-                    log_level,
-                    component,
-                    context,
-                    log_id,
-                )?;
+                let frame_str_opt = self.demangle_frame(&attr["frame"], s, line_formatter)?;
                 if let Some(frame_str) = frame_str_opt {
                     return Ok(frame_str);
                 }
             }
 
-            let msg_fmt = self.re.replace_all(msg, |caps: &Captures| {
+            let msg_fmt = LOG_ATTR_REGEX.replace_all(msg, |caps: &Captures| {
                 // println!("{}", &caps[1]);
                 let v = &attr[&caps[1]];
                 if v.is_object() || v.is_number() || v.is_boolean() {
@@ -673,7 +713,7 @@ impl LogFormatter {
                         let key = String::from(&caps[1]) + suffix;
                         let v = &attr[key];
                         if v.is_number() {
-                            return v.dump() + &short;
+                            return v.dump() + short;
                         }
                     }
 
@@ -689,7 +729,7 @@ impl LogFormatter {
                 component,
                 context,
                 log_id,
-                self.maybe_color_text(&msg_fmt),
+                self.maybe_color_text(&msg_fmt).as_ref(),
             ))
         } else {
             if !attr.is_empty() {
@@ -703,88 +743,70 @@ impl LogFormatter {
                     && attr["bt"].has_key("processInfo")
                     && attr["bt"]["processInfo"]["somap"][0].has_key("elfType")
                 {
-                    return self.demangle_backtrace(
-                        &attr["bt"],
-                        s,
-                        d,
-                        log_level,
-                        component,
-                        context,
-                        log_id,
-                    );
+                    return self.demangle_backtrace(&attr["bt"], basic_line_formatter);
                 }
 
                 let is_frame = msg.starts_with("  Frame:") || msg.starts_with("Frame");
                 if is_frame {
-                    let frame_str_opt = self.demangle_frame(
-                        &attr["frame"],
-                        s,
-                        d,
-                        log_level,
-                        component,
-                        context,
-                        log_id,
-                    )?;
+                    let frame_str_opt = self.demangle_frame(&attr["frame"], s, line_formatter)?;
                     if let Some(frame_str) = frame_str_opt {
                         return Ok(frame_str);
                     }
                 }
 
+                // {"t":{"$date":"2022-06-23T20:26:51.713Z"},"s":"E",  "c":"TEST",
+                //  "id":23070,
+                // "ctx":"thread1",
+                // "msg":"Throwing exception",
+                // "attr":{"exception":"Expected swDoc.getValue().count == 12345689 (123456789 == 12345689) @src/mongo/crypto/fle_crypto_test.cpp:352"}}
+                if log_id == 23070 {
+                    let exception_text = get_json_str(attr, "exception", s)?;
+                    // Add a space after @ to be friendlier for vs code
+                    let fixed_msg = &exception_text.replace("@src", "@ src");
+                    let s = String::from(msg) + " " + fixed_msg;
+                    return Ok(line_formatter(&self.maybe_color_text(&s)));
+                }
+
                 // A message for a unit test failure
                 if log_id == 4680100 {
-                    let mut ret = String::new();
-
-                    let test_name = get_json_str(&attr, "test", s)?;
-                    let test_exception = get_json_str(&attr, "type", s)?;
-                    let test_error = get_json_str(&attr, "error", s)?;
-
-                    // This is a string dump of an json document of a stack trace
-                    // TODO - recursively format this as a backtrace
-                    let test_extra = get_json_str(&attr, "extra", s)?;
-                    std::fmt::Write::write_str(
-                        &mut ret,
-                        &LogFormatter::format_line_basic(
-                            d,
-                            log_level,
-                            component,
-                            context,
-                            self.maybe_color_text(&format!(
-                                "FAIL: '{}' with '{}' \n",
-                                test_name, test_exception
-                            )),
-                        ),
-                    )?;
-                    std::fmt::Write::write_str(
-                        &mut ret,
-                        &LogFormatter::format_line_basic(
-                            d,
-                            log_level,
-                            component,
-                            context,
-                            self.maybe_color_text(&format!("{}\n", test_error)),
-                        ),
-                    )?;
-                    std::fmt::Write::write_str(
-                        &mut ret,
-                        &LogFormatter::format_line_basic(
-                            d,
-                            log_level,
-                            component,
-                            context,
-                            Cow::Owned(self.filter_test_extra(test_extra)),
-                        ),
-                    )?;
-                    return Ok(ret);
+                    return self.unittest_exception_to_str(s, attr, basic_line_formatter);
                 }
 
                 let s = String::from(msg) + " " + attr.dump().as_ref();
+
+                // A message for a test suite
+                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23063,   "ctx":"thread1","msg":"Running","attr":{"suite":"FLE_ESC"}}
+                if log_id == 23063 {
+                    return Ok(self.format_line(
+                        d,
+                        log_level,
+                        component,
+                        context,
+                        log_id,
+                        self.maybe_color(color_test_suite(&s)).as_ref(),
+                    ));
+                }
+
+                // A message for a test name
+                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23059,   "ctx":"thread1","msg":"Running","attr":{"test":"RoundTrip","rep":1,"reps":1}}
+                if log_id == 23059 {
+                    return Ok(self.format_line(
+                        d,
+                        log_level,
+                        component,
+                        context,
+                        log_id,
+                        self.maybe_color(color_test_name(&s)).as_ref(),
+                    ));
+                }
+
                 return Ok(self.format_line(
                     d,
                     log_level,
                     component,
                     context,
                     log_id,
-                    self.maybe_color_text(&s),
+                    self.maybe_color_text(&s).as_ref(),
                 ));
             }
 
@@ -794,7 +816,7 @@ impl LogFormatter {
                 component,
                 context,
                 log_id,
-                self.maybe_color_text(msg),
+                self.maybe_color_text(msg).as_ref(),
             ))
         }
     }
@@ -814,6 +836,17 @@ impl LogFormatter {
         // We do not think it is a JSON log line, return it as is
         Ok(String::from(s))
     }
+
+    fn fuzzy_log_color_str(&mut self, s: &str) -> Result<String> {
+        let ret_str = self.fuzzy_log_to_str(s)?;
+
+        // let state_caps_opt = self.re_state_color.captures(&ret_str);
+        // if let Some(state_caps) = state_caps_opt {
+        //     let port = state_caps[1];
+        // }
+
+        Ok(ret_str)
+    }
 }
 
 // The output is wrapped in a Result to allow matching on errors
@@ -832,31 +865,29 @@ where
 {
     let lf_byte = vec![10];
 
-    for line in lines {
-        if let Ok(line_opt) = line {
-            let convert_result = lf.fuzzy_log_to_str(&line_opt.as_str());
-            match convert_result {
-                Ok(s) => {
-                    let r = writer.write_all(s.as_bytes());
-                    if r.is_err() {
-                        eprintln!("Error: {:?}", r);
-                        return;
-                    }
-                }
-                Err(m) => {
-                    // TODO - format error message better
-                    let r = writer.write_all(m.to_string().as_bytes());
-                    if r.is_err() {
-                        eprintln!("Error: {:?}", r);
-                        return;
-                    }
+    for line in lines.flatten() {
+        let convert_result = lf.fuzzy_log_color_str(line.as_str());
+        match convert_result {
+            Ok(s) => {
+                let r = writer.write_all(s.as_bytes());
+                if r.is_err() {
+                    eprintln!("Error: {:?}", r);
+                    return;
                 }
             }
-            let r = writer.write_all(lf_byte.as_ref());
-            if r.is_err() {
-                eprintln!("Error: {:?}", r);
-                return;
+            Err(m) => {
+                // TODO - format error message better
+                let r = writer.write_all(m.to_string().as_bytes());
+                if r.is_err() {
+                    eprintln!("Error: {:?}", r);
+                    return;
+                }
             }
+        }
+        let r = writer.write_all(lf_byte.as_ref());
+        if r.is_err() {
+            eprintln!("Error: {:?}", r);
+            return;
         }
     }
 }
@@ -907,7 +938,7 @@ struct TeeWriter<'a> {
 
 impl<'a> TeeWriter<'a> {
     fn new(writers: Vec<Box<dyn io::Write + 'a>>) -> TeeWriter<'a> {
-        TeeWriter { writers: writers }
+        TeeWriter { writers }
     }
 }
 
@@ -915,15 +946,11 @@ impl<'a> io::Write for TeeWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut size: usize = 0;
         for writer in self.writers.iter_mut() {
-            let r = writer.write(buf);
-            if let Ok(s) = r {
-                if s != 0 && size != 0 && size != s {
-                    panic!("Failed to write same size to writers - {} - {}", s, size);
-                }
-                size = s;
-            } else {
-                return r;
+            let s = writer.write(buf)?;
+            if s != 0 && size != 0 && size != s {
+                panic!("Failed to write same size to writers - {} - {}", s, size);
             }
+            size = s;
         }
         Ok(size)
     }
@@ -931,6 +958,8 @@ impl<'a> io::Write for TeeWriter<'a> {
     fn flush(&mut self) -> io::Result<()> {
         for writer in self.writers.iter_mut() {
             let r = writer.flush();
+
+            #[allow(clippy::question_mark)]
             if r.is_err() {
                 return r;
             }
@@ -971,8 +1000,7 @@ fn get_writer<'a>(
     // see https://en.wikipedia.org/wiki/ANSI_escape_code
     // We need to look for "\x1B[" some text and then 'm'
     if tee {
-        let mut writers = Vec::<Box<dyn io::Write + 'a>>::new();
-        writers.push(writer);
+        let mut writers = vec![writer];
 
         let out_lock = stdout.lock();
         writers.push(Box::new(out_lock));
@@ -1102,6 +1130,10 @@ fn run_command(
 fn main() -> Result<()> {
     let args = Cli::from_args();
 
+    if args.color {
+        SHOULD_COLORIZE.set_override(true);
+    }
+
     let stdout_handle = io::stdout();
     let mut writer = get_writer(args.output, &stdout_handle, args.tee, args.backup)?;
 
@@ -1111,7 +1143,7 @@ fn main() -> Result<()> {
         let cmd = &args.path_or_cmd.unwrap();
         let cmd_args = args.cmd_args;
 
-        run_command(&cmd, &cmd_args, &mut lf, &mut writer)?
+        run_command(cmd, &cmd_args, &mut lf, &mut writer)?
     } else {
         match args.path_or_cmd {
             Some(file_name) => {

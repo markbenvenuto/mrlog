@@ -72,4 +72,7 @@ Apache 2.0
 
 TODO
 - make MongoDB json format specify the name of the main binary
-- add support for unittest asserts
+- add support for coloring jstests
+- color fatal and warning log messages
+- https://github.com/BurntSushi/memchr ?
+
