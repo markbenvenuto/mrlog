@@ -35,7 +35,7 @@ use nix::unistd::Pid;
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, Cursor, ErrorKind, Read, Write};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -871,7 +871,7 @@ where
             Ok(s) => {
                 let r = writer.write_all(s.as_bytes());
                 if r.is_err() {
-                    eprintln!("Error: {:?}", r);
+                    eprintln!("convert_lines ok Error: {:?}", r);
                     return;
                 }
             }
@@ -879,14 +879,14 @@ where
                 // TODO - format error message better
                 let r = writer.write_all(m.to_string().as_bytes());
                 if r.is_err() {
-                    eprintln!("Error: {:?}", r);
+                    eprintln!("convert_lines error Error: {:?}", r);
                     return;
                 }
             }
         }
         let r = writer.write_all(lf_byte.as_ref());
         if r.is_err() {
-            eprintln!("Error: {:?}", r);
+            eprintln!("convert_lines lf Error: {:?}", r);
             return;
         }
     }
@@ -932,6 +932,112 @@ struct Cli {
     decode: Option<PathBuf>,
 }
 
+fn read_one(cur: &mut Cursor<&[u8]>) -> Option<u8> {
+    let mut cb = [0; 1];
+
+    let cr = cur.read_exact(&mut cb);
+    if cr.is_err() {
+        if cr.err().unwrap().kind() == ErrorKind::UnexpectedEof {
+            return None;
+        }
+
+        // return cr.with_context(|| return "strip color failed");
+        //return Err(anyhow::Error::msg("strip color failed"));
+        // Err("TODO");
+        // return anyhow!("...");
+        panic!("strip color failed");
+    }
+
+    Some(cb[0])
+}
+
+// TODO - strip out ANSI codes when writing to a file.
+// see https://en.wikipedia.org/wiki/ANSI_escape_code
+// We need to look for "\x1B[" some text and then 'm'
+fn strip_color(buf: &[u8], out_buf: &mut Vec<u8>) {
+    out_buf.clear();
+    out_buf.reserve(buf.len());
+
+    if !buf.contains(&0x1B) {
+        out_buf.extend_from_slice(buf);
+        return;
+    }
+
+    let mut cur = Cursor::new(buf);
+
+    loop {
+        let b_esc_opt = read_one(&mut cur);
+        if b_esc_opt.is_none() {
+            return;
+        }
+
+        let b_esc = b_esc_opt.unwrap();
+        if b_esc != 0x1B {
+            out_buf.push(b_esc);
+            continue;
+        }
+
+        // Parse '['
+        let b_left_bracket_opt = read_one(&mut cur);
+        if b_left_bracket_opt.is_none() {
+            // TODO - unexpected
+            eprintln!("Unterminated color code1, no '[' found");
+            return;
+        }
+
+        let b_left_bracket = b_left_bracket_opt.unwrap();
+        if b_left_bracket != b'[' {
+            eprintln!("Unterminated color code2, no '[' found");
+            out_buf.push(b_left_bracket);
+            continue;
+        }
+
+        // Keep reading until 'm'
+        loop {
+            // Parse '['
+            let b_trailing_m = read_one(&mut cur);
+            if b_trailing_m.is_none() {
+                // TODO - unexpected, unterminated code
+                eprintln!("Unterminated color code, no 'm' found");
+                return;
+            }
+
+            let b_trailing_m = b_trailing_m.unwrap();
+            if b_trailing_m == b'm' {
+                break;
+            }
+        }
+    }
+}
+
+// Writer that strips all ASCII color codes from input stream
+struct ColorStripperWriter<'a> {
+    writer: Box<dyn io::Write + 'a>,
+    buf: Vec<u8>,
+}
+
+impl<'a> ColorStripperWriter<'a> {
+    fn new(writer: Box<dyn io::Write + 'a>) -> ColorStripperWriter<'a> {
+        ColorStripperWriter {
+            writer,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl<'a> io::Write for ColorStripperWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        strip_color(buf, &mut self.buf);
+        self.writer.write(self.buf.as_ref())?; // TODo error
+
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
 struct TeeWriter<'a> {
     writers: Vec<Box<dyn io::Write + 'a>>,
 }
@@ -973,8 +1079,9 @@ fn get_writer<'a>(
     stdout: &'a io::Stdout,
     tee: bool,
     backup: bool,
+    color_strip: bool,
 ) -> Result<Box<dyn io::Write + 'a>> {
-    let writer: Box<dyn io::Write + 'a> =
+    let mut writer: Box<dyn io::Write + 'a> =
         match file_name_buf.as_ref() {
             Some(file_name) => {
                 if backup && file_name.as_path().exists() {
@@ -996,10 +1103,11 @@ fn get_writer<'a>(
             }
         };
 
-    // TODO - strip out ANSI codes when writing to a file.
-    // see https://en.wikipedia.org/wiki/ANSI_escape_code
-    // We need to look for "\x1B[" some text and then 'm'
     if tee {
+        if color_strip {
+            writer = Box::new(ColorStripperWriter::new(writer));
+        }
+
         let mut writers = vec![writer];
 
         let out_lock = stdout.lock();
@@ -1135,7 +1243,13 @@ fn main() -> Result<()> {
     }
 
     let stdout_handle = io::stdout();
-    let mut writer = get_writer(args.output, &stdout_handle, args.tee, args.backup)?;
+    let mut writer = get_writer(
+        args.output,
+        &stdout_handle,
+        args.tee,
+        args.backup,
+        args.color,
+    )?;
 
     let mut lf = LogFormatter::new(args.color, args.id, args.decode);
 
@@ -1163,6 +1277,13 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+fn strip_color_to_buf(buf: &[u8]) -> Vec<u8> {
+    let mut out_buf = Vec::new();
+    strip_color(buf, &mut out_buf);
+    out_buf
 }
 
 #[test]
@@ -1220,4 +1341,18 @@ fn test_demangle() {
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-03-26T20:22:29.422Z"},"s":"I", "c":"CONTROL", "id":31445,  "ctx":"main","msg":"  Frame: {frame}","attr":{"frame":{"a":"7FFCD7CAC3E1","module":"ucrtbased.dll","s":"raise","s+":"441"}}}"#).unwrap(), "2020-03-26T20:22:29.422Z I  CONTROL  [main]   Frame: 0x7FFCD7CAC3E1 ucrtbased.dll!raise+0x441"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-03-26T20:22:29.422Z"},"s":"I", "c":"CONTROL", "id":31445,  "ctx":"main","msg":"  Frame: {frame}","attr":{"frame":{"a":"7FF7FD471783","module":"util_test.exe","file":".../src/mongo/util/alarm_test.cpp","line":53,"s":"mongo::`anonymous namespace'::UnitTest_SuiteNameAlarmSchedulerTestNameBrokeAss::_doTest","s+":"23"}}}"#).unwrap(), "2020-03-26T20:22:29.422Z I  CONTROL  [main]   Frame: 0x7FF7FD471783 util_test.exe!mongo::`anonymous namespace\'::UnitTest_SuiteNameAlarmSchedulerTestNameBrokeAss::_doTest+0x23 [.../src/mongo/util/alarm_test.cpp @ 53]"};
+}
+
+#[test]
+fn test_color_strip() {
+    assert_eq! {strip_color_to_buf("abc".as_bytes()), "abc".as_bytes()}
+
+    assert_eq! {strip_color_to_buf("abc\x1b[0m".as_bytes()), "abc".as_bytes()}
+
+    assert_eq! {strip_color_to_buf("abc\x1b[0m".as_bytes()), "abc".as_bytes()}
+    assert_eq! {strip_color_to_buf("abc\x1b[32m".as_bytes()), "abc".as_bytes()}
+    assert_eq! {strip_color_to_buf("\x1b[32mabc".as_bytes()), "abc".as_bytes()}
+
+    assert_eq! {strip_color_to_buf("\x1b[0m.\x1b[32mabc".as_bytes()), ".abc".as_bytes()}
+    assert_eq! {strip_color_to_buf("\x1b[0m.\x1b[0m.\x1b[0m\x1b[0m\x1b[32mabc".as_bytes()), "..abc".as_bytes()}
 }

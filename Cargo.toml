@@ -13,7 +13,7 @@ lazy-regex = "2.3.0"
 
 structopt = "0.3.20"
 
-anyhow = "1.0.53"
+anyhow = { version ="1.0.66", features = ["backtrace"] }
 
 colored = "2.0.0"
 
