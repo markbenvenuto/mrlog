@@ -66,7 +66,6 @@ mod shared_stream;
 use shared_stream::SharedStreamFactory;
 
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
-// TODO - replace with https://github.com/joshua-maros/ouroboros as rental is retired
 #[cfg(target_os = "linux")]
 mod rent {
     use ouroboros::self_referencing;

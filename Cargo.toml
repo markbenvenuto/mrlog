@@ -11,36 +11,36 @@ description = "Converts MongoDB 4.4 log format to MongoDB 4.2 and prior style te
 
 [dependencies]
 json = "0.12.4"
-regex = "1.5.4"
-lazy-regex = "2.3.0"
+regex = "1.7.1"
+lazy-regex = "2.4.1"
 
-structopt = "0.3.20"
+structopt = "0.3.26"
 
-anyhow = { version ="1.0.66", features = ["backtrace"] }
+anyhow = { version ="1.0.68", features = ["backtrace"] }
 
 colored = "2.0.0"
 
-crossbeam-channel="0.5.2"
+crossbeam-channel="0.5.8"
 
-cpp_demangle = "0.3.5"
+cpp_demangle = "0.4.0"
 
-nix = "0.23.1"
+nix = "0.26.2"
 # Handle SIGTERM and SIGINT
-ctrlc = { version = "3.2.1", default-features = false, features = ["termination"] }
+ctrlc = { version = "3.2.4", default-features = false, features = ["termination"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi="0.3.9"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-object={ version = "0.27.1", default-features = false, features = ["read", "compression"] }
+object={ version = "0.30.3", default-features = false, features = ["read", "compression"] }
 
-addr2line="0.17.0"
-memmap2 = "0.5.2"
-gimli = { version = "0.26.1", default-features = false, features = ["read"] }
+addr2line="0.19.0"
+memmap2 = "0.5.8"
+gimli = { version = "0.27.1", default-features = false, features = ["read"] }
 
 # rental = "0.5.5"
-ouroboros = "0.15.0"
+ouroboros = "0.15.5"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
