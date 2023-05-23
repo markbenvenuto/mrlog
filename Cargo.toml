@@ -4,6 +4,8 @@ version = "0.2.1"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2018"
 repository = "https://github.com/markbenvenuto/mrlog"
+license = "Apache-2.0"
+description = "Converts MongoDB 4.4 log format to MongoDB 4.2 and prior style text logs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
