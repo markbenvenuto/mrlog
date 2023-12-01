@@ -12,7 +12,7 @@ description = "Converts MongoDB 4.4 log format to MongoDB 4.2 and prior style te
 [dependencies]
 json = "0.12.4"
 regex = "1.7.1"
-lazy-regex = "2.4.1"
+lazy-regex = "3.1.0"
 
 structopt = "0.3.26"
 
@@ -24,7 +24,8 @@ crossbeam-channel="0.5.8"
 
 cpp_demangle = "0.4.0"
 
-nix = "0.26.2"
+nix = { version = "0.27.1", default-features = false, features = ["process", "signal"] }
+
 # Handle SIGTERM and SIGINT
 ctrlc = { version = "3.2.4", default-features = false, features = ["termination"] }
 
@@ -33,14 +34,14 @@ winapi="0.3.9"
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-object={ version = "0.30.3", default-features = false, features = ["read", "compression"] }
+object={ version = "0.32.1", default-features = false, features = ["read", "compression"] }
 
-addr2line="0.19.0"
-memmap2 = "0.5.8"
-gimli = { version = "0.27.1", default-features = false, features = ["read"] }
+addr2line="0.21.0"
+memmap2 = "0.9.0"
+gimli = { version = "0.28.1", default-features = false, features = ["read"] }
 
 # rental = "0.5.5"
-ouroboros = "0.15.5"
+ouroboros = "0.18.0"
 
 # The profile that 'cargo dist' will build with
 [profile.dist]
@@ -50,13 +51,15 @@ lto = "thin"
 # Config for 'cargo dist'
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
-cargo-dist-version = "0.0.7"
+cargo-dist-version = "0.5.0"
 # The preferred Rust toolchain to use in CI (rustup toolchain syntax)
 rust-toolchain-version = "1.67.1"
-# CI backends to support (see 'cargo dist generate-ci')
+# CI backends to support
 ci = ["github"]
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-apple-darwin"]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc", "aarch64-gnu-unknown-linux"]
+# Publish jobs to run in CI
+pr-run-mode = "plan"
 

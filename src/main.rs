@@ -505,7 +505,11 @@ impl LogFormatter {
 
             let mut count = 0;
             {
-                let mut frames = ctx.find_frames(offset)?;
+                let frames_result = ctx.find_frames(offset);
+
+                // TODO - add support for split dwarf
+                // see addr2line::builtin_split_dwarf_loader::SplitDwarfLoader
+                let mut frames = frames_result.skip_all_loads()?;
                 while let Some(frame) = frames.next()? {
                     count += 1;
 
@@ -1027,7 +1031,7 @@ impl<'a> ColorStripperWriter<'a> {
 impl<'a> io::Write for ColorStripperWriter<'a> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         strip_color(buf, &mut self.buf);
-        self.writer.write(self.buf.as_ref())?; // TODo error
+        self.writer.write_all(self.buf.as_ref())?; // TODO error
 
         Ok(buf.len())
     }
@@ -1176,8 +1180,8 @@ fn run_command(
         .unwrap();
 
     let ts = thread::spawn(move || {
-        let mut v = Vec::new();
-        v.resize(8192, 0);
+        let mut v = vec![0; 8192];
+
         loop {
             let ret = output_out.read(v.as_mut_slice());
             match ret {
@@ -1200,8 +1204,8 @@ fn run_command(
     });
 
     let ts2 = thread::spawn(move || {
-        let mut v = Vec::new();
-        v.resize(8192, 0);
+        let mut v = vec![0; 8192];
+
         loop {
             let ret = output_err.read(v.as_mut_slice());
             match ret {
