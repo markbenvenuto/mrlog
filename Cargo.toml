@@ -1,6 +1,6 @@
 [package]
 name = "mrlog"
-version = "0.2.2"
+version = "0.2.3"
 authors = ["Mark Benvenuto <mark.benvenuto@mongodb.com>"]
 edition = "2018"
 repository = "https://github.com/markbenvenuto/mrlog"
