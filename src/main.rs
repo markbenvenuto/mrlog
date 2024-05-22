@@ -55,12 +55,17 @@ use cpp_demangle::Symbol;
 use object::Object;
 
 use colored::control::SHOULD_COLORIZE;
-use colored::{ColoredString, Colorize};
+use colored::{Color, ColoredString, Colorize};
 
 use lazy_regex::{lazy_regex, Lazy};
 use regex::*;
 
 use structopt::StructOpt;
+
+mod resmoke_colors;
+use resmoke_colors::{
+    ResmokeComponentColors, RESMOKE_COMPONENT_REGEXES, RESMOKE_FORMAT, RESMOKE_LOG_SUCCESS,
+};
 
 mod shared_stream;
 use shared_stream::SharedStreamFactory;
@@ -129,18 +134,14 @@ struct LogFormatter {
 
 static LOG_FORMAT_PREFIX: &str = r#"{"t":{"$date"#;
 
-static LOG_ERROR_REGEX: Lazy<Regex> =
-    lazy_regex!(r#"invariant|fassert|failed to load|uncaught exception|FAIL"#);
+static LOG_ERROR_REGEX: Lazy<Regex> = lazy_regex!(
+    r#"invariant|fassert|failed to load|uncaught exception|FAIL|.*@.+:\d+:|assert:|253 Failure executing JS file|The following tests failed|File "([^"]+)", line (\d+), in ([^\s]+)|Traceback"#
+);
 
 // Unit tests
 static LOG_WARNING_REGEX: Lazy<Regex> = lazy_regex!(r#"Expected"#);
 
 static LOG_ATTR_REGEX: Lazy<Regex> = lazy_regex!(r#"\{([\w]+)\}"#);
-
-//static LOG_PORT_REGEX: Lazy<Regex> = lazy_regex!(r#" [sdbc](\d{1,5})\|"#);
-
-//static LOG_STATE_REGEX: Lazy<Regex> = lazy_regex!(r#"\[j\d:([cs]\d?)?(:prim|:sec)?\]"#);
-// r#"(:s(hard)?\d*|:c(onfigsvr)?)?:(initsync|prim(ary)?|(mongo)?s|sec(ondary)?\d*|n(ode)?\d*)]"#;
 
 // from duration.h
 const LOG_TIME_SUFFIXES_TUPLE: &[(&str, &str)] = &[
@@ -285,6 +286,25 @@ impl LogFormatter {
         }
 
         s.to_string()
+    }
+
+    fn resmoke_color<'a>(&self, prefix: &Match, s: &'a str) -> Cow<'a, str> {
+        let mut color: &ResmokeComponentColors = &RESMOKE_COMPONENT_REGEXES;
+        for component in prefix.as_str().split([':', ' ', ']', '[']) {
+            for candidate in &color.children_by_regex {
+                if !component.is_empty() && candidate.0.is_match(component) {
+                    color = &candidate.1;
+                }
+            }
+        }
+
+        if RESMOKE_LOG_SUCCESS.is_match(s) {
+            return Cow::Owned(s.color(Color::BrightGreen).to_string());
+        } else if LOG_ERROR_REGEX.is_match(s) {
+            return Cow::Owned(s.truecolor(206, 30, 92).to_string());
+        } else {
+            return Cow::Owned(s.color(color.default_color).to_string());
+        }
     }
 
     fn maybe_color_text<'a>(&self, s: &'a str) -> Cow<'a, str> {
@@ -657,7 +677,7 @@ impl LogFormatter {
         Ok(ret)
     }
 
-    fn log_to_str(&mut self, s: &str) -> Result<String> {
+    fn json_to_str(&mut self, s: &str) -> Result<String> {
         let parsed =
             json::parse(s).with_context(|| format!("Failed to parse JSON log line: {}", s))?;
 
@@ -824,8 +844,33 @@ impl LogFormatter {
         }
     }
 
+    fn resmoke_log_to_str(&mut self, prefix: &Match, suffix: &Match) -> Result<String> {
+        if suffix.as_str().starts_with("{") {
+            return match self.json_to_str(suffix.as_str()) {
+                Ok(s) => Ok(self
+                    .resmoke_color(prefix, &format!("{}{}", prefix.as_str(), s).to_string())
+                    .to_string()),
+                Err(e) => Err(e),
+            };
+        } else {
+            return Ok(self
+                .resmoke_color(
+                    prefix,
+                    &format!("{}{}", prefix.as_str(), suffix.as_str()).to_string(),
+                )
+                .to_string());
+        }
+    }
+
+    fn log_to_str(&mut self, s: &str) -> Result<String> {
+        if let Some(captures) = RESMOKE_FORMAT.captures(s) {
+            return self.resmoke_log_to_str(&captures.get(1).unwrap(), &captures.get(2).unwrap());
+        }
+        return self.json_to_str(s);
+    }
+
     fn fuzzy_log_to_str(&mut self, s: &str) -> Result<String> {
-        if s.starts_with(LOG_FORMAT_PREFIX) {
+        if s.starts_with(LOG_FORMAT_PREFIX) || s.starts_with("[") {
             return self.log_to_str(s);
         }
 
@@ -837,7 +882,7 @@ impl LogFormatter {
         }
 
         // We do not think it is a JSON log line, return it as is
-        Ok(String::from(s))
+        Ok(self.maybe_color_text(s).to_string())
     }
 
     fn fuzzy_log_color_str(&mut self, s: &str) -> Result<String> {
