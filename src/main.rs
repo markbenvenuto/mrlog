@@ -297,11 +297,11 @@ impl LogFormatter {
         }
 
         if RESMOKE_LOG_SUCCESS.is_match(s) {
-            return Cow::Owned(s.color(Color::BrightGreen).to_string());
+            Cow::Owned(s.color(Color::BrightGreen).to_string())
         } else if LOG_ERROR_REGEX.is_match(s) {
-            return Cow::Owned(s.truecolor(206, 30, 92).to_string());
+            Cow::Owned(s.truecolor(206, 30, 92).to_string())
         } else {
-            return Cow::Owned(s.color(color.default_color).to_string());
+            Cow::Owned(s.color(color.default_color).to_string())
         }
     }
 
@@ -852,19 +852,19 @@ impl LogFormatter {
 
     fn resmoke_log_to_str(&mut self, prefix: &Match, suffix: &Match) -> Result<String> {
         if suffix.as_str().starts_with("{") {
-            return match self.json_to_str(suffix.as_str()) {
+            match self.json_to_str(suffix.as_str()) {
                 Ok(s) => Ok(self
                     .resmoke_color(prefix, &format!("{}{}", prefix.as_str(), s).to_string())
                     .to_string()),
                 Err(e) => Err(e),
-            };
+            }
         } else {
-            return Ok(self
+            Ok(self
                 .resmoke_color(
                     prefix,
                     &format!("{}{}", prefix.as_str(), suffix.as_str()).to_string(),
                 )
-                .to_string());
+                .to_string())
         }
     }
 
@@ -872,7 +872,7 @@ impl LogFormatter {
         if let Some(captures) = RESMOKE_FORMAT.captures(s) {
             return self.resmoke_log_to_str(&captures.get(1).unwrap(), &captures.get(2).unwrap());
         }
-        return self.json_to_str(s);
+        self.json_to_str(s)
     }
 
     fn fuzzy_log_to_str(&mut self, s: &str) -> Result<String> {

@@ -35,7 +35,7 @@ fn color_for_port(prefix: &str, last_digit: &str, color: Color) -> ResmokeColorP
 }
 
 fn blue_no(n: usize) -> Color {
-    return *vec![
+    *vec![
         from_rgb(0, 0, 255),     // True Blue.
         from_rgb(135, 206, 235), // Sky Blue.
         from_rgb(137, 207, 240), // Baby Blue.
@@ -59,11 +59,11 @@ fn blue_no(n: usize) -> Color {
         from_rgb(15, 77, 146),   // Yale Blue.
     ]
     .get(n)
-    .unwrap();
+    .unwrap()
 }
 
 fn green_no(n: usize) -> Color {
-    return *vec![
+    *vec![
         from_rgb(0, 255, 0),     // Lime Green.
         from_rgb(34, 139, 34),   // Forest Green.
         from_rgb(46, 139, 87),   // Sea Green.
@@ -87,11 +87,11 @@ fn green_no(n: usize) -> Color {
         from_rgb(80, 200, 120),  // Emerald Green.
     ]
     .get(n)
-    .unwrap();
+    .unwrap()
 }
 
 fn orange_no(n: usize) -> Color {
-    return *vec![
+    *vec![
         from_rgb(255, 165, 0),   // Bright Orange.
         from_rgb(255, 117, 24),  // Pumpkin Orange.
         from_rgb(255, 127, 80),  // Coral.
@@ -115,7 +115,7 @@ fn orange_no(n: usize) -> Color {
         from_rgb(245, 134, 52),  // Chili Orange.
     ]
     .get(n)
-    .unwrap();
+    .unwrap()
 }
 
 fn colors_for_fixture_ports_offset(offset: usize) -> Vec<ResmokeColorPolicy> {
