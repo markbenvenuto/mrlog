@@ -44,9 +44,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use colored::{control::SHOULD_COLORIZE, Color, ColoredString, Colorize};
+use colored::{Color, ColoredString, Colorize, control::SHOULD_COLORIZE};
 use cpp_demangle::Symbol;
-use lazy_regex::{lazy_regex, Lazy};
+use lazy_regex::{Lazy, lazy_regex};
 #[cfg(not(target_os = "windows"))]
 use nix::sys::signal::{self, Signal};
 #[cfg(not(target_os = "windows"))]
@@ -58,10 +58,10 @@ use structopt::StructOpt;
 
 mod resmoke_colors;
 use resmoke_colors::{
-    ResmokeComponentColors,
     RESMOKE_COMPONENT_REGEXES,
     RESMOKE_FORMAT,
     RESMOKE_LOG_SUCCESS,
+    ResmokeComponentColors,
 };
 
 mod shared_stream;
@@ -1307,8 +1307,9 @@ fn main() -> Result<()> {
 
     let mut lf = LogFormatter::new(args.color, args.id, args.decode);
 
-    if args.execute & args.path_or_cmd.is_some() {
-        let cmd = &args.path_or_cmd.unwrap();
+    if let Some(cmd) = args.path_or_cmd.as_ref()
+        && args.execute
+    {
         let cmd_args = args.cmd_args;
 
         run_command(cmd, &cmd_args, &mut lf, &mut writer)?
