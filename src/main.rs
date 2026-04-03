@@ -27,44 +27,41 @@ extern crate regex;
 // TODO - make mac and linux specific
 #[cfg(not(target_os = "windows"))]
 extern crate nix;
+#[cfg(target_os = "linux")]
+use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
+use std::{
+    borrow::Cow,
+    fs,
+    fs::File,
+    io::{self, BufRead, Cursor, ErrorKind, Read, Write},
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    string::{String, ToString},
+    thread,
+    vec::Vec,
+};
+
+use anyhow::{Context, Result};
+use colored::{control::SHOULD_COLORIZE, Color, ColoredString, Colorize};
+use cpp_demangle::Symbol;
+use lazy_regex::{lazy_regex, Lazy};
 #[cfg(not(target_os = "windows"))]
 use nix::sys::signal::{self, Signal};
 #[cfg(not(target_os = "windows"))]
 use nix::unistd::Pid;
-
-#[cfg(target_os = "linux")]
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufRead, Cursor, ErrorKind, Read, Write};
-use std::path::Path;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-#[cfg(target_os = "linux")]
-use std::rc::Rc;
-use std::string::String;
-use std::string::ToString;
-use std::thread;
-use std::vec::Vec;
-use std::{borrow::Cow, fs};
-
-use anyhow::{Context, Result};
-
-use cpp_demangle::Symbol;
-
 #[cfg(target_os = "linux")]
 use object::Object;
-
-use colored::control::SHOULD_COLORIZE;
-use colored::{Color, ColoredString, Colorize};
-
-use lazy_regex::{lazy_regex, Lazy};
 use regex::*;
-
 use structopt::StructOpt;
 
 mod resmoke_colors;
 use resmoke_colors::{
-    ResmokeComponentColors, RESMOKE_COMPONENT_REGEXES, RESMOKE_FORMAT, RESMOKE_LOG_SUCCESS,
+    ResmokeComponentColors,
+    RESMOKE_COMPONENT_REGEXES,
+    RESMOKE_FORMAT,
+    RESMOKE_LOG_SUCCESS,
 };
 
 mod shared_stream;
@@ -73,8 +70,9 @@ use shared_stream::SharedStreamFactory;
 // See https://stackoverflow.com/questions/32300132/why-cant-i-store-a-value-and-a-reference-to-that-value-in-the-same-struct
 #[cfg(target_os = "linux")]
 mod rent {
-    use ouroboros::self_referencing;
     use std::rc::Rc;
+
+    use ouroboros::self_referencing;
 
     #[self_referencing]
     pub struct RentObject {
@@ -332,10 +330,15 @@ impl LogFormatter {
     where
         F: Fn(&str) -> String,
     {
-        // Windows: "msg":"  Frame: {frame}","attr":{"frame":{"a":"7FFCD7CAC3E1","module":"ucrtbased.dll","s":"raise","s+":"441"}}}
-        //          "msg":"  Frame: {frame}","attr":{"frame":{"a":"7FF7FD471750","module":"util_test.exe","file":".../src/mongo/util/alarm_test.cpp","line":48,"s":"mongo::`anonymous namespace'::doThrow","s+":"30"}}}
-        // Linux:   "msg":"  Frame: {frame}","attr":{"frame":{"a":"7F4266DD4CD5","b":"7F4266DA1000","o":"33CD5","s":"abort","s+":"175"}}}
-        //          "msg":"Frame","attr":{"frame":{"a":"5585D6E3A6AB","b":"5585CDBFE000","o":"923C6AB"}}}
+        // Windows: "msg":"  Frame:
+        // {frame}","attr":{"frame":{"a":"7FFCD7CAC3E1","module":"ucrtbased.dll","s":"raise","s+":"
+        // 441"}}}          "msg":"  Frame:
+        // {frame}","attr":{"frame":{"a":"7FF7FD471750","module":"util_test.exe","file":".../src/
+        // mongo/util/alarm_test.cpp","line":48,"s":"mongo::`anonymous
+        // namespace'::doThrow","s+":"30"}}} Linux:   "msg":"  Frame:
+        // {frame}","attr":{"frame":{"a":"7F4266DD4CD5","b":"7F4266DA1000","o":"33CD5","s":"abort","
+        // s+":"175"}}}          "msg":"Frame","attr":{"frame":{"a":"5585D6E3A6AB","b":"
+        // 5585CDBFE000","o":"923C6AB"}}}
         let symbol_address = get_json_str(frame, "a", s)?;
         let symbol_module_ret = frame["module"].as_str();
         if let Some(symbol_module) = symbol_module_ret {
@@ -757,8 +760,8 @@ impl LogFormatter {
         } else {
             if !attr.is_empty() {
                 // Only mac and linux have processInfo
-                // Note: decoding only works on Linux for now since gimli::Object does not support multi-arch binaries on Mac
-                // TODO - use goblin instead
+                // Note: decoding only works on Linux for now since gimli::Object does not support
+                // multi-arch binaries on Mac TODO - use goblin instead
                 // See https://github.com/rust-lang/backtrace-rs/blob/ac175e25d15e7bd2c870cd4d06e141bc62bbf59e/src/symbolize/gimli.rs#L38-L61
                 if cfg!(target_os = "linux")
                     && self.decode.is_some()
@@ -781,7 +784,8 @@ impl LogFormatter {
                 //  "id":23070,
                 // "ctx":"thread1",
                 // "msg":"Throwing exception",
-                // "attr":{"exception":"Expected swDoc.getValue().count == 12345689 (123456789 == 12345689) @src/mongo/crypto/fle_crypto_test.cpp:352"}}
+                // "attr":{"exception":"Expected swDoc.getValue().count == 12345689 (123456789 ==
+                // 12345689) @src/mongo/crypto/fle_crypto_test.cpp:352"}}
                 if log_id == 23070 {
                     let exception_text = get_json_str(attr, "exception", s)?;
                     // Add a space after @ to be friendlier for vs code
@@ -798,7 +802,8 @@ impl LogFormatter {
                 let s = String::from(msg) + " " + attr.dump().as_ref();
 
                 // A message for a test suite
-                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23063,   "ctx":"thread1","msg":"Running","attr":{"suite":"FLE_ESC"}}
+                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23063,
+                // "ctx":"thread1","msg":"Running","attr":{"suite":"FLE_ESC"}}
                 if log_id == 23063 {
                     return Ok(self.format_line(
                         d,
@@ -811,7 +816,8 @@ impl LogFormatter {
                 }
 
                 // A message for a test name
-                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23059,   "ctx":"thread1","msg":"Running","attr":{"test":"RoundTrip","rep":1,"reps":1}}
+                // {"t":{"$date":"2022-06-23T20:26:51.825Z"},"s":"I",  "c":"TEST",     "id":23059,
+                // "ctx":"thread1","msg":"Running","attr":{"test":"RoundTrip","rep":1,"reps":1}}
                 if log_id == 23059 {
                     return Ok(self.format_line(
                         d,
@@ -1376,8 +1382,12 @@ fn test_demangle() {
     let mut lf = LogFormatter::new_for_test();
 
     // gdb formatting
-    // #2  __pthread_cond_timedwait (cond=0x7ffff56f2b30, mutex=0x7ffff56975b0, abstime=0x7ffff3a0a470) at pthread_cond_wait.c:656
-    // #3  0x000055555ab43bc5 in __gthread_cond_timedwait (__cond=0x7ffff56f2b30, __mutex=0x7ffff56975b0, __abs_timeout=0x7ffff3a0a470) at /usr/bin/../lib/gcc/x86_64-redhat-linux/9/../../../../include/c++/9/x86_64-redhat-linux/bits/gthr-default.h:872
+    // #2  __pthread_cond_timedwait (cond=0x7ffff56f2b30, mutex=0x7ffff56975b0,
+    // abstime=0x7ffff3a0a470) at pthread_cond_wait.c:656 #3  0x000055555ab43bc5 in
+    // __gthread_cond_timedwait (__cond=0x7ffff56f2b30, __mutex=0x7ffff56975b0,
+    // __abs_timeout=0x7ffff3a0a470) at
+    // /usr/bin/../lib/gcc/x86_64-redhat-linux/9/../../../../include/c++/9/x86_64-redhat-linux/bits/
+    // gthr-default.h:872
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-03-27T22:14:14.256Z"},"s":"I", "c":"CONTROL", "id":31427,  "ctx":"main","msg":"  Frame: {frame}","attr":{"frame":{"a":"7F426A9EE7E6","b":"7F4268D16000","o":"1CD87E6","s":"_ZN5mongo12_GLOBAL__N_116abruptQuitActionEiP7siginfoPv","s+":"66"}}}"#).unwrap(), "2020-03-27T22:14:14.256Z I  CONTROL  [main]   Frame: 0x7F426A9EE7E6 mongo::(anonymous namespace)::abruptQuitAction(int, siginfo*, void*)+0x66"};
 
@@ -1385,7 +1395,8 @@ fn test_demangle() {
 
     // Windows formatting
     // 02 0000009a`84bfea50 00007ffc`9321c937 KERNELBASE!SleepConditionVariableSRW+0x2d
-    // 03 0000009a`84bfea90 00007ffc`931e1466 MSVCP140D!__crtSleepConditionVariableSRW+0x67 [f:\dd\vctools\crt\crtw32\misc\winapisupp.cpp @ 626]
+    // 03 0000009a`84bfea90 00007ffc`931e1466 MSVCP140D!__crtSleepConditionVariableSRW+0x67
+    // [f:\dd\vctools\crt\crtw32\misc\winapisupp.cpp @ 626]
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-03-26T20:22:29.422Z"},"s":"I", "c":"CONTROL", "id":31445,  "ctx":"main","msg":"  Frame: {frame}","attr":{"frame":{"a":"7FFCD7CAC3E1","module":"ucrtbased.dll","s":"raise","s+":"441"}}}"#).unwrap(), "2020-03-26T20:22:29.422Z I  CONTROL  [main]   Frame: 0x7FFCD7CAC3E1 ucrtbased.dll!raise+0x441"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-03-26T20:22:29.422Z"},"s":"I", "c":"CONTROL", "id":31445,  "ctx":"main","msg":"  Frame: {frame}","attr":{"frame":{"a":"7FF7FD471783","module":"util_test.exe","file":".../src/mongo/util/alarm_test.cpp","line":53,"s":"mongo::`anonymous namespace'::UnitTest_SuiteNameAlarmSchedulerTestNameBrokeAss::_doTest","s+":"23"}}}"#).unwrap(), "2020-03-26T20:22:29.422Z I  CONTROL  [main]   Frame: 0x7FF7FD471783 util_test.exe!mongo::`anonymous namespace\'::UnitTest_SuiteNameAlarmSchedulerTestNameBrokeAss::_doTest+0x23 [.../src/mongo/util/alarm_test.cpp @ 53]"};
