@@ -7,48 +7,6 @@ repository = "https://github.com/markbenvenuto/mrlog"
 license = "Apache-2.0"
 description = "Converts MongoDB 4.4 log format to MongoDB 4.2 and prior style text logs"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-json = "0.12.4"
-regex = "1.7.1"
-lazy-regex = "3.1.0"
-
-structopt = "0.3.26"
-
-anyhow = { version ="1.0.68", features = ["backtrace"] }
-
-colored = "2.0.0"
-
-crossbeam-channel="0.5.8"
-
-cpp_demangle = "0.4.0"
-
-nix = { version = "0.27.1", default-features = false, features = ["process", "signal"] }
-
-# Handle SIGTERM and SIGINT
-ctrlc = { version = "3.2.4", default-features = false, features = ["termination"] }
-lazy_static = "1.5.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-winapi="0.3.9"
-
-
-[target.'cfg(target_os = "linux")'.dependencies]
-object={ version = "0.32.1", default-features = false, features = ["read", "compression"] }
-
-addr2line="0.21.0"
-memmap2 = "0.9.0"
-gimli = { version = "0.28.1", default-features = false, features = ["read"] }
-
-# rental = "0.5.5"
-ouroboros = "0.18.0"
-
-# The profile that 'cargo dist' will build with
-[profile.dist]
-inherits = "release"
-lto = "thin"
-
 # Config for 'cargo dist'
 [workspace.metadata.dist]
 # The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
@@ -60,8 +18,42 @@ ci = ["github"]
 # The installers to generate for each app
 installers = ["shell", "powershell"]
 # Target platforms to build apps for (Rust target-triple syntax)
-targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-pc-windows-msvc"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
 # Publish jobs to run in CI
 pr-run-mode = "plan"
 
-lazy_static = "1.4"
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+anyhow = { version = "1.0.68", features = ["backtrace"] }
+colored = "2.0.0"
+cpp_demangle = "0.4.0"
+crossbeam-channel = "0.5.8"
+# Handle SIGTERM and SIGINT
+ctrlc = { version = "3.2.4", default-features = false, features = ["termination"] }
+json = "0.12.4"
+lazy-regex = "3.1.0"
+lazy_static = "1.5.0"
+nix = { version = "0.27.1", default-features = false, features = ["process", "signal"] }
+regex = "1.7.1"
+structopt = "0.3.26"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+addr2line = "0.21.0"
+gimli = { version = "0.28.1", default-features = false, features = ["read"] }
+memmap2 = "0.9.0"
+object = { version = "0.32.1", default-features = false, features = ["read", "compression"] }
+# rental = "0.5.5"
+ouroboros = "0.18.0"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = "0.3.9"
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
