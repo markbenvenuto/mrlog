@@ -1373,9 +1373,11 @@ fn test_log_to_str_with_duration_replacements() {
 #[test]
 fn test_fuzzy_log() {
     let mut lf = LogFormatter::new_for_test();
-    assert_eq! { lf.fuzzy_log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+    assert_eq! { lf.fuzzy_log_to_str(r#"{"t":{"$date":"2026-03-30T15:26:26.008-04:00"},"s":"I",  "c":"CONTROL",  "id":23403,   "ctx":"initandlisten","msg":"Build Info","attr":{"buildInfo":{"version":"9.0.0-alpha0","gitVersion":"nogitversion","openSSLVersion":"OpenSSL 3.5.4 30 Sep 2025","modules":["enterprise"],"allocator":"tcmalloc-google","environment":{"distarch":"x86_64","target_arch":"x86_64"}}}}"#).unwrap(),
+    r#"2026-03-30T15:26:26.008-04:00 I  CONTROL  [initandlisten] Build Info {"buildInfo":{"version":"9.0.0-alpha0","gitVersion":"nogitversion","openSSLVersion":"OpenSSL 3.5.4 30 Sep 2025","modules":["enterprise"],"allocator":"tcmalloc-google","environment":{"distarch":"x86_64","target_arch":"x86_64"}}}"#};
 
-    assert_eq! { lf.fuzzy_log_to_str(r#"[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| {"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL","id":23400,"ctx":"initandlisten","msg":"{openSSLVersion_OpenSSL_version}","attr":{"openSSLVersion_OpenSSL_version":"OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"}}"#).unwrap(), "[js_test:txn_two_phase_commit_basic] 2020-02-15T23:32:14.540-0500 d20021| 2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] OpenSSL version: OpenSSL 1.1.1d FIPS  10 Sep 2019"};
+    assert_eq! { lf.fuzzy_log_to_str(r#"[js_test:foo_test] d20050| {"t":{"$date":"2026-03-30T15:26:26.008-04:00"},"s":"I",  "c":"CONTROL",  "id":23403,   "ctx":"initandlisten","msg":"Build Info","attr":{"buildInfo":{"version":"9.0.0-alpha0","gitVersion":"nogitversion","openSSLVersion":"OpenSSL 3.5.4 30 Sep 2025","modules":["enterprise"],"allocator":"tcmalloc-google","environment":{"distarch":"x86_64","target_arch":"x86_64"}}}}"#).unwrap(),
+    r#"[js_test:foo_test] d20050| 2026-03-30T15:26:26.008-04:00 I  CONTROL  [initandlisten] Build Info {"buildInfo":{"version":"9.0.0-alpha0","gitVersion":"nogitversion","openSSLVersion":"OpenSSL 3.5.4 30 Sep 2025","modules":["enterprise"],"allocator":"tcmalloc-google","environment":{"distarch":"x86_64","target_arch":"x86_64"}}}"#};
 }
 
 #[test]
