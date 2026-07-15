@@ -14,6 +14,7 @@
 
 #[cfg(target_os = "linux")]
 extern crate addr2line;
+extern crate chrono;
 extern crate cpp_demangle;
 extern crate crossbeam_channel;
 extern crate ctrlc;
@@ -44,6 +45,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use colored::{Color, ColoredString, Colorize, control::SHOULD_COLORIZE};
 use cpp_demangle::Symbol;
 use lazy_regex::{Lazy, lazy_regex};
@@ -141,6 +143,8 @@ static LOG_WARNING_REGEX: Lazy<Regex> = lazy_regex!(r#"Expected"#);
 
 static LOG_ATTR_REGEX: Lazy<Regex> = lazy_regex!(r#"\{([\w]+)\}"#);
 
+static LSN_REGEX: Lazy<Regex> = lazy_regex!(r#"(lsn|LSN|Lsn)([ ":()]*)(\d+)"#);
+
 // from duration.h
 const LOG_TIME_SUFFIXES_TUPLE: &[(&str, &str)] = &[
     ("Nanos", "ns"),
@@ -221,6 +225,30 @@ fn parse_somap(o: &json::JsonValue) -> Result<HashMap<String, ObjectEntry>> {
     Ok(map)
 }
 
+// Finds LSN (Log Sequence Number) patterns in a line and annotates them with a human-readable
+// form. Matches "lsn", "LSN", or "Lsn" preceded by a quote, space, or underscore, followed by
+// optional spacing/punctuation and a u64. The u64 encodes two u32 values: the high 32 bits are
+// seconds since the Unix epoch, and the low 32 bits are an integer counter. Each match is
+// rewritten as: <original_u64> (<UTC datetime>, <counter>).
+fn transform_lsn(s: &str) -> Cow<'_, str> {
+    LSN_REGEX.replace_all(s, |caps: &Captures| {
+        let num_str = &caps[3];
+        if let Ok(num) = num_str.parse::<u64>() {
+            let secs = (num >> 32) as i64;
+            let counter = (num & 0xFFFF_FFFF) as u32;
+            let dt_str = DateTime::from_timestamp(secs, 0)
+                .map(|dt: DateTime<Utc>| dt.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                .unwrap_or_else(|| secs.to_string());
+            format!(
+                "{}{}{} ({}, {})",
+                &caps[1], &caps[2], num_str, dt_str, counter
+            )
+        } else {
+            caps[0].to_string()
+        }
+    })
+}
+
 impl LogFormatter {
     fn new(use_color: bool, log_id: bool, decode: Option<PathBuf>) -> LogFormatter {
         LogFormatter {
@@ -287,6 +315,10 @@ impl LogFormatter {
     }
 
     fn resmoke_color<'a>(&self, prefix: &Match, s: &'a str) -> Cow<'a, str> {
+        if !self.use_color {
+            return Cow::from(s);
+        }
+
         let mut color: &ResmokeComponentColors = &RESMOKE_COMPONENT_REGEXES;
         for component in prefix.as_str().split([':', ' ', ']', '[']) {
             for candidate in &color.children_by_regex {
@@ -869,10 +901,12 @@ impl LogFormatter {
     }
 
     fn log_to_str(&mut self, s: &str) -> Result<String> {
-        if let Some(captures) = RESMOKE_FORMAT.captures(s) {
-            return self.resmoke_log_to_str(&captures.get(1).unwrap(), &captures.get(2).unwrap());
-        }
-        self.json_to_str(s)
+        let result = if let Some(captures) = RESMOKE_FORMAT.captures(s) {
+            self.resmoke_log_to_str(&captures.get(1).unwrap(), &captures.get(2).unwrap())?
+        } else {
+            self.json_to_str(s)?
+        };
+        Ok(transform_lsn(&result).to_string())
     }
 
     fn fuzzy_log_to_str(&mut self, s: &str) -> Result<String> {
@@ -888,7 +922,7 @@ impl LogFormatter {
         }
 
         // We do not think it is a JSON log line, return it as is
-        Ok(self.maybe_color_text(s).to_string())
+        Ok(self.maybe_color_text(&transform_lsn(s)).to_string())
     }
 
     fn fuzzy_log_color_str(&mut self, s: &str) -> Result<String> {
@@ -1368,6 +1402,50 @@ fn test_log_to_str_with_duration_replacements() {
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-02-15T23:32:14.539-0500"},"s":"I", "c":"CONTROL", "id":23400,"ctx":"initandlisten","msg":"test {duration}","attr":{"durationMicros":123}}"#).unwrap(), "2020-02-15T23:32:14.539-0500 I  CONTROL  [initandlisten] test 123μs"};
 
     assert_eq! { lf.log_to_str(r#"{"t":{"$date":"2020-04-08T11:49:08.243-04:00"},"s":"I", "c":"-",       "id":4333222,"ctx":"ReplicaSetMonitor-TaskExecutor","msg":"RSM {setName} received failed isMaster for server {host}: {status} ({latency}): {bson}","attr":{"host":"chimichurri:20022","status":"NetworkInterfaceExceededTimeLimit: Couldn't get a connection within the time limit of 1000ms","latencyNanos":9999952000,"setName":"config_chunks_tags_upgrade_downgrade_cluster-rs0","bson":"{}"}}"#).unwrap(), "2020-04-08T11:49:08.243-04:00 I  -        [ReplicaSetMonitor-TaskExecutor] RSM config_chunks_tags_upgrade_downgrade_cluster-rs0 received failed isMaster for server chimichurri:20022: NetworkInterfaceExceededTimeLimit: Couldn\'t get a connection within the time limit of 1000ms (9999952000ns): {}"};
+}
+
+#[test]
+fn test_lsn_filter() {
+    let mut lf = LogFormatter::new_for_test();
+
+    // secs=1723015808 (2024-08-07T12:30:08Z), counter=10
+    let lsn_val: u64 = (1723015808u64 << 32) | 10u64;
+
+    // lower case "lsn", colon+space separator (as if from a JSON attribute substitution)
+    let msg = format!(
+        r#"{{"t":{{"$date":"2024-08-07T12:30:08.000Z"}},"s":"I","c":"STORAGE","id":1,"ctx":"test","msg":"lsn: {}"}}"#,
+        lsn_val
+    );
+    let result = lf.log_to_str(&msg).unwrap();
+    assert!(
+        result.contains(&format!("lsn: {} (2024-08-07T07:30:08Z, 10)", lsn_val)),
+        "got: {}",
+        result
+    );
+
+    // upper case "LSN", space separator
+    let msg2 = format!(
+        r#"{{"t":{{"$date":"2024-08-07T12:30:08.000Z"}},"s":"I","c":"STORAGE","id":1,"ctx":"test","msg":" LSN {}"}}"#,
+        lsn_val
+    );
+    let result2 = lf.log_to_str(&msg2).unwrap();
+    assert!(
+        result2.contains(&format!("LSN {} (2024-08-07T07:30:08Z, 10)", lsn_val)),
+        "got: {}",
+        result2
+    );
+
+    // title case "Lsn", underscore prefix
+    let msg3 = format!(
+        r#"{{"t":{{"$date":"2024-08-07T12:30:08.000Z"}},"s":"I","c":"STORAGE","id":1,"ctx":"test","msg":"_Lsn: {}"}}"#,
+        lsn_val
+    );
+    let result3 = lf.log_to_str(&msg3).unwrap();
+    assert!(
+        result3.contains(&format!("_Lsn: {} (2024-08-07T07:30:08Z, 10)", lsn_val)),
+        "got: {}",
+        result3
+    );
 }
 
 #[test]
